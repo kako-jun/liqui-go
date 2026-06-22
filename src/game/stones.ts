@@ -45,17 +45,14 @@ export function resolveAdd(current: CellValue, d: number): CellValue {
   return next;
 }
 
-// 現象の命名（notes 準拠）。表示・ログ・実況のためのラベル。
+// 現象の命名（design.md 準拠）。表示・ログ・実況のためのラベル。
 export type Phenomenon =
   | "place" // 空きに1石
   | "pour" // 空きに0.5（ポア）
-  | "solidify" // 自分の0.5 + 自分の0.5 → 1石に確定（ソリディファイ）
-  | "break" // 0.5 同士の相殺 → 消滅（ブレイク）
-  | "overpour" // 相手の0.5の上から流し込んで色を奪う（オーバーポア） ※下記 TODO
-  | "capture" // 相手の1石に1石 → 両消滅
-  | "reduce" // 相手の1石にポア → 相手の0.5へ削る
-  | "intercept" // 相手の1石に自分の0.5が着地（ムーブ迎撃）→ 相手の0.5へ
-  | "none";
+  | "solidify" // 自分の0.5 + 自分の0.5 → 1石に確定（ソリディファイ）。ムーブ経由
+  | "cancel" // 0.5 同士がぶつかって両方消える相殺（キャンセル）
+  | "capture" // 1石 vs 1石 → 両消滅。同時着手経由
+  | "reduce"; // 自分の1石が相手の0.5に削られて自分の0.5になる（1のまま残らない）
 
 export interface Resolution {
   readonly after: CellValue;
@@ -63,50 +60,45 @@ export interface Resolution {
 }
 
 /**
- * (before, デルタ) から結果値と現象名を求める。
+ * セル値 before に、ある着手/ムーブのデルタ d が重なったときの結果と現象名。
  *
- * TODO(design): notes「石の計算ルール」表に矛盾がある。
- *   - 「自分の0.5に相手の0.5 → 0.5-0.5=0 ブレイク（消滅）」
- *   - 「相手の0.5にポアする → -0.5+1=0.5 オーバーポア（色変わり）」
- *   同じ "0.5 vs 0.5" の操作なのに、片方は消滅・片方は色を奪う。後者はデルタが +1
- *   （＝1石ぶん）になっており、ポア(0.5)ではなく「1石で上書き」を指している可能性が高い。
- *   ここでは「デルタの大きさ」で機械的に分岐する（オーバーポアはデルタ |1| のときだけ成立）。
- *   ポア(|0.5|)が相手の0.5に当たったら break として扱う。正式ルールは kako-jun の決定待ち。
+ * ルールモデル（重要）: 石が触れ合う経路は2つだけ。
+ *   ① 同時着手 — 両者が同じ「空き点」を同じターンに奪い合う（デルタが足し合わさる）
+ *   ② ムーブ   — 0.5 が隣へ乗り込む（1石は動けない）
+ * 既にある石へ直接「置きにいく」ことは無い。よって「相手の0.5の上に1石を置く」
+ * （旧オーバーポア＝色奪い）は原理的に起こらず、ここでは例外として弾く。
+ * 0.5 が相手の0.5とぶつかれば必ず相殺（cancel）。1石が0.5とぶつかれば必ず削れて
+ * 0.5 になり、1石のまま残ることはない（reduce）。
  */
 export function classify(before: CellValue, d: number): Resolution {
   const after = resolveAdd(before, d);
-  const placing: Player = d > 0 ? "black" : "white";
-  const beforeSign = Math.sign(before);
-  const placingSign = Math.sign(d);
+  const sameColor = Math.sign(before) === Math.sign(d);
   const isStone = Math.abs(d) === 1;
-  const isPour = Math.abs(d) === 0.5;
 
   // 空きへの着手
   if (before === 0) {
     return { after, phenomenon: isStone ? "place" : "pour" };
   }
 
-  // 同色
-  if (beforeSign === placingSign) {
-    // 自分の0.5 + 自分の0.5 → 1石
-    if (isPour && Math.abs(before) === 0.5) return { after, phenomenon: "solidify" };
-    // それ以外の同色加算は本来禁手（自分の1石の上など）。resolveAdd が弾く。
-    return { after, phenomenon: "none" };
+  // 同色が重なる（自分の0.5に自分の0.5がムーブで乗る）→ ソリディファイ。
+  // 自分の1石への重ねは禁手で、resolveAdd が先に弾く。
+  if (sameColor) {
+    return { after, phenomenon: "solidify" };
   }
 
-  // 異色（相手の石の上）
+  // 異色の衝突。
   if (Math.abs(before) === 1) {
-    // 相手の1石
-    if (isStone) return { after, phenomenon: "capture" }; // 1石で相打ち → 0
-    return { after, phenomenon: "reduce" }; // ポアで削る → 相手の0.5
-  } else {
-    // 相手の0.5
-    if (isStone) return { after, phenomenon: "overpour" }; // 1石ぶんで色を奪う（要確認）
-    return { after, phenomenon: "break" }; // 0.5 同士 → 消滅
+    // 自分の1石に、相手の 1石（同時着手）→ 相打ち / 相手の 0.5 → 削れて自分の0.5
+    return { after, phenomenon: isStone ? "capture" : "reduce" };
   }
-
-  // placing は将来 intercept 等の分岐で使う（現状は未使用警告回避のため参照）。
-  void placing;
+  // 相手の0.5との衝突。
+  if (isStone) {
+    // 0.5 の上に 1石 は起こり得ない（1は動けず、同時着手は空き点限定）。
+    throw new RangeError(
+      `0.5(${before}) に 1石(${d}) は衝突しない（1は動けない・同時着手は空き点のみ）`,
+    );
+  }
+  return { after, phenomenon: "cancel" }; // 0.5 同士 → 相殺
 }
 
 /**

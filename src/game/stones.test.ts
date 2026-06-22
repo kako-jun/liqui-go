@@ -33,19 +33,23 @@ describe("classify — 現象の命名", () => {
     expect(classify(0, 1).phenomenon).toBe("place");
     expect(classify(0, 0.5).phenomenon).toBe("pour");
   });
-  it("自分の0.5にポアで solidify", () => {
+  it("自分の0.5に自分の0.5（ムーブ）で solidify", () => {
     expect(classify(0.5, 0.5)).toEqual({ after: 1, phenomenon: "solidify" });
+    expect(classify(-0.5, -0.5)).toEqual({ after: -1, phenomenon: "solidify" });
   });
-  it("相手の0.5にポアで break（消滅）", () => {
-    expect(classify(0.5, -0.5)).toEqual({ after: 0, phenomenon: "break" });
+  it("0.5 同士の相殺は cancel（同時着手でもムーブでも消滅）", () => {
+    expect(classify(0.5, -0.5)).toEqual({ after: 0, phenomenon: "cancel" });
+    expect(classify(-0.5, 0.5)).toEqual({ after: 0, phenomenon: "cancel" });
   });
-  it("相手の1石に1石で capture（相打ち）", () => {
+  it("1石 vs 1石で capture（相打ち）", () => {
     expect(classify(-1, 1)).toEqual({ after: 0, phenomenon: "capture" });
   });
-  it("相手の1石にポアで reduce（削る）", () => {
+  it("自分の1石が相手の0.5に削られて自分の0.5（reduce）。1のまま残らない", () => {
     expect(classify(-1, 0.5)).toEqual({ after: -0.5, phenomenon: "reduce" });
+    expect(classify(1, -0.5)).toEqual({ after: 0.5, phenomenon: "reduce" });
   });
-  it("相手の0.5に1石で overpour（色を奪う・要design確認）", () => {
-    expect(classify(-0.5, 1)).toEqual({ after: 0.5, phenomenon: "overpour" });
+  it("相手の0.5に1石をぶつける手は存在しない（1は動けない）→ 例外", () => {
+    expect(() => classify(-0.5, 1)).toThrow(RangeError);
+    expect(() => classify(0.5, -1)).toThrow(RangeError);
   });
 });
