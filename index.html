@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>リキッ碁 / Liqui-go</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0e14;
+        overflow: hidden;
+      }
+      #app {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        color: #cfe3ff;
+        font:
+          12px/1.5 ui-monospace,
+          monospace;
+        opacity: 0.7;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">リキッ碁 — dev scaffold（盤面と石の値を確認中。液体地形は未実装）</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
