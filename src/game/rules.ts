@@ -60,6 +60,14 @@ export function placementRejection(
   return null;
 }
 
+/**
+ * その交点が星・天元か（ルール②の 1.5 手権利ポイント）。
+ * boardDef の不変データ starPoints と座標一致を見るだけの純粋判定。state に依存しない。
+ */
+export function isStarPoint(def: BoardSizeDef, x: number, y: number): boolean {
+  return def.starPoints.some(([sx, sy]) => sx === x && sy === y);
+}
+
 /** 現局面で置ける全交点を列挙する。 */
 export function legalPlacements(def: BoardSizeDef, state: GameState): Point[] {
   const out: Point[] = [];
@@ -157,8 +165,16 @@ export type Plot = PlacePlot | MovePlot;
 /** プロット入力。null = パス。 */
 export type PlotInput = Plot | null;
 
-/** プロット（place / move 共通）を拒否する理由。ムーブ固有の理由を Rejection に足す。 */
-export type PlotRejection = Rejection | "not-your-half" | "not-adjacent" | "illegal-landing";
+/**
+ * プロット（place / move 共通）を拒否する理由。ムーブ固有の理由を Rejection に足す。
+ * "no-move-right" は追加ポア（0.5手・ルール②）を moveRights 無しで打とうとしたときの拒否。
+ */
+export type PlotRejection =
+  | Rejection
+  | "not-your-half"
+  | "not-adjacent"
+  | "illegal-landing"
+  | "no-move-right";
 
 /** 解決で起きた現象1件（表示・実況用）。 */
 export interface ResolveEvent {
@@ -215,6 +231,9 @@ function plotRejection(
   return moveRejection(def, state, plot, player);
 }
 
+/** 追加ポア（0.5手・ルール②）の着地点。null = その手番は追加ポアを使わない。 */
+export type ExtraInput = { x: number; y: number } | null;
+
 /**
  * 同時プロット制（ルール①＋③）を1ラウンド解決する（純粋・元 state 不変）。
  *
@@ -228,15 +247,24 @@ function plotRejection(
  * events のラベル付けだけ tris/swap/同点place を優先判定する（盤面は常にデルタ和で正）。
  *
  * cooldown は commitPlacement と同じく tick→押印の順。contrib の全キー（move の
- * from/to 両方・place の to・相殺で 0 になった点も）へ押印して相殺ループを防ぐ。
+ * from/to 両方・place の to・extra の点・相殺で 0 になった点も）へ押印して相殺ループを防ぐ。
+ *
+ * ルール②（1.5手・星パックマン）: blackExtra / whiteExtra は「その手番が 1.5 手の権利
+ * （moveRights===maxMoveRight）を持つとき打てる追加ポア0.5」の着地点。extra は main plot と
+ * 同じ加算デルタ寄与（着点へ ±0.5 の pour）として盤面に混ぜる。moveRights は消費→取得の順で
+ * 更新する（extra を使えば 0 に消費し、その後どの着地点でも星なら 1.5 を取得＝星に置けば持続）。
+ * extra を省略（既定 null）すれば従来どおりのシグネチャ・挙動で動く（後方互換）。
  */
 export function resolveSimultaneous(
   def: BoardSizeDef,
   state: GameState,
   blackPlot: PlotInput,
   whitePlot: PlotInput,
+  blackExtra: ExtraInput = null,
+  whiteExtra: ExtraInput = null,
 ): SimResult {
-  // 1. 検証（両者とも開始 state 基準）。黒を先に見て、拒否理由が返れば which 付きで失敗。
+  // 1. 検証（両者とも開始 state 基準・黒先）。まず main plot、続いて extra を見る。
+  //    拒否理由が返れば which 付きで即失敗（元 state は一切触っていない＝不変）。
   if (blackPlot !== null) {
     const reason = plotRejection(def, state, blackPlot, "black");
     if (reason !== null) return { ok: false, which: "black", reason };
@@ -244,6 +272,20 @@ export function resolveSimultaneous(
   if (whitePlot !== null) {
     const reason = plotRejection(def, state, whitePlot, "white");
     if (reason !== null) return { ok: false, which: "white", reason };
+  }
+  // extra 検証: (a) その手番が 1.5 手の権利を持たない → no-move-right。
+  //            (b) 着地点が空き・cooldown外・盤内でない → placementRejection の理由。
+  const extras: ReadonlyArray<readonly [Player, ExtraInput]> = [
+    ["black", blackExtra],
+    ["white", whiteExtra],
+  ];
+  for (const [player, extra] of extras) {
+    if (extra === null) continue;
+    if (state.moveRights[player] !== RULES.maxMoveRight) {
+      return { ok: false, which: player, reason: "no-move-right" };
+    }
+    const reason = placementRejection(def, state, extra.x, extra.y);
+    if (reason !== null) return { ok: false, which: player, reason };
   }
 
   // 2. 寄与構築。関与セル index → 累積デルタ。
@@ -265,6 +307,11 @@ export function resolveSimultaneous(
       add(indexOf(def, plot.toX, plot.toY), h); // to へ 0.5 を足す
     }
   }
+  // extra（追加ポア）: 着点へ delta(player,"pour")（黒 +0.5 / 白 -0.5）を寄与。
+  for (const [player, extra] of extras) {
+    if (extra === null) continue;
+    add(indexOf(def, extra.x, extra.y), delta(player, "pour"));
+  }
 
   // 3. 適用。開始 cells のクローンへ、寄与デルタをまとめて足す（元 state.cells は不変）。
   const cells = state.cells.slice();
@@ -278,16 +325,46 @@ export function resolveSimultaneous(
   }
 
   // 4. cooldown: 先に全点 tick、その後で contrib の全キーへ押印（同ターンで即減らない）。
-  //    from/to・place の to・相殺で 0 に戻った点も押印して相殺ループを防ぐ。
+  //    from/to・place の to・extra の点・相殺で 0 に戻った点も押印して相殺ループを防ぐ。
   const cooldown = tickCooldowns(state.cooldown);
   for (const i of contrib.keys()) {
     cooldown[i] = RULES.koCooldownTurns;
   }
 
-  // 5. events（HUD 用ラベル）。盤面は常に cells（デルタ和）で正。
-  const events = buildEvents(def, state, cells, blackPlot, whitePlot);
+  // 5. moveRights 更新（ルール②）。順序が肝心: 消費(→0) してから 取得(→1.5)。
+  //    ゆえに extra を星へ打つと 0 に消費した直後に星取得で 1.5 に戻り、権利は持続する。
+  //    moveRights は石に紐付かない GameState のフィールドなので、星の石が後で取られても
+  //    ここで立てた権利は自動的に持続する。
+  const newRights = { ...state.moveRights };
+  if (blackExtra) newRights.black = 0; // 追加ポアを使った手番は消費
+  if (whiteExtra) newRights.white = 0;
+  for (const [player, plot, extra] of [
+    ["black", blackPlot, blackExtra],
+    ["white", whitePlot, whiteExtra],
+  ] as const) {
+    // その手番の着地点集合（main plot: place=(x,y)/move=(toX,toY)、extra=(x,y)。非nullのみ）。
+    const targets: Array<{ x: number; y: number }> = [];
+    if (plot !== null) {
+      if (plot.type === "place") targets.push({ x: plot.x, y: plot.y });
+      else targets.push({ x: plot.toX, y: plot.toY });
+    }
+    if (extra !== null) targets.push({ x: extra.x, y: extra.y });
+    // いずれかの着地点が星なら 1.5 を取得（上限 maxMoveRight・冪等・2.0 にならない）。
+    if (targets.some((t) => isStarPoint(def, t.x, t.y))) {
+      newRights[player] = RULES.maxMoveRight;
+    }
+  }
 
-  // 6. 新 state を返す（moveRights 明示コピー・turnCount+1・純粋）。両 pass なら
+  // 6. events（HUD 用ラベル）。盤面は常に cells（デルタ和）で正。
+  const events = buildEvents(def, state, cells, blackPlot, whitePlot);
+  // extra（追加ポア）は buildEvents の対象外なので、あれば pour イベントを追記する。
+  for (const [, extra] of extras) {
+    if (extra === null) continue;
+    const i = indexOf(def, extra.x, extra.y);
+    events.push({ x: extra.x, y: extra.y, phenomenon: "pour", after: cells[i] as CellValue });
+  }
+
+  // 7. 新 state を返す（moveRights は新配列・turnCount+1・純粋）。両 pass かつ extra 無しなら
   //    contrib 空 → cells 不変・events 空・cooldown は tick のみ・turnCount+1。
   return {
     ok: true,
@@ -295,7 +372,7 @@ export function resolveSimultaneous(
       ...state,
       cells,
       cooldown,
-      moveRights: { ...state.moveRights },
+      moveRights: newRights,
       turnCount: state.turnCount + 1,
     },
     events,
