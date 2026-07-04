@@ -235,6 +235,43 @@ function plotRejection(
 export type ExtraInput = { x: number; y: number } | null;
 
 /**
+ * 追加ポア（extra・ルール②）の検証（純粋・state 不変）。
+ * 権利保持・着点の合法性（空き/cooldown/盤内）に加え、同一手番の main と同点に重なって
+ * 合算が合法値域を外れる場合を弾く。main ポア(+0.5)+extra ポア(+0.5)=1.0 は自分の1石を
+ * 作る正当手なので通す（一律同点禁止にはしない）。実際の合算値が値域を外れるときだけ弾く。
+ *
+ * 判定順: 権利無し → no-move-right / 着点が空きでない・cooldown・盤外 → placementRejection の理由 /
+ *   同一手番 main の着地点と同点かつ合算が値域外 → illegal-landing。すべて通れば null。
+ *
+ * 相手手番との同点重なり（black extra と white main 等）は 0 方向へ相殺するので値域に収まり、
+ * ここでは扱わない（同一手番の main＋extra の 1.5手だけが超過し得る唯一の経路）。
+ */
+export function extraRejection(
+  def: BoardSizeDef,
+  state: GameState,
+  player: Player,
+  mainPlot: PlotInput,
+  extra: { x: number; y: number },
+): PlotRejection | null {
+  if (state.moveRights[player] !== RULES.maxMoveRight) return "no-move-right";
+  const base = placementRejection(def, state, extra.x, extra.y);
+  if (base !== null) return base; // 空き/cooldown/盤外
+  // 同一手番の main 着地点と同点なら、main 寄与＋extra 寄与の合算が合法値域内か検証。
+  const iExtra = indexOf(def, extra.x, extra.y);
+  let mainContribAtExtra = 0;
+  if (mainPlot?.type === "place" && indexOf(def, mainPlot.x, mainPlot.y) === iExtra) {
+    mainContribAtExtra = delta(player, mainPlot.placeKind);
+  } else if (mainPlot?.type === "move" && indexOf(def, mainPlot.toX, mainPlot.toY) === iExtra) {
+    mainContribAtExtra = player === "black" ? 0.5 : -0.5; // move 着地の 0.5 寄与
+  }
+  if (mainContribAtExtra !== 0) {
+    const combined = state.cells[iExtra] + mainContribAtExtra + delta(player, "pour");
+    if (!isLegalCellValue(combined)) return "illegal-landing";
+  }
+  return null;
+}
+
+/**
  * 同時プロット制（ルール①＋③）を1ラウンド解決する（純粋・元 state 不変）。
  *
  * 検証は両者とも同一の開始 state に対して独立に行う。place / move を問わず、
@@ -273,18 +310,16 @@ export function resolveSimultaneous(
     const reason = plotRejection(def, state, whitePlot, "white");
     if (reason !== null) return { ok: false, which: "white", reason };
   }
-  // extra 検証: (a) その手番が 1.5 手の権利を持たない → no-move-right。
-  //            (b) 着地点が空き・cooldown外・盤内でない → placementRejection の理由。
-  const extras: ReadonlyArray<readonly [Player, ExtraInput]> = [
-    ["black", blackExtra],
-    ["white", whiteExtra],
+  // extra 検証: extraRejection で権利・着点の合法性に加え、同一手番の main と同点に重なって
+  //   合算が合法値域を外れる場合まで弾く（main ポア+extra ポア=1.0 は正当なので通す）。
+  //   これで同点超過が正しい which・reason で早期 return され、resolveAdd の throw へ到達しない。
+  const extras: ReadonlyArray<readonly [Player, ExtraInput, PlotInput]> = [
+    ["black", blackExtra, blackPlot],
+    ["white", whiteExtra, whitePlot],
   ];
-  for (const [player, extra] of extras) {
+  for (const [player, extra, mainPlot] of extras) {
     if (extra === null) continue;
-    if (state.moveRights[player] !== RULES.maxMoveRight) {
-      return { ok: false, which: player, reason: "no-move-right" };
-    }
-    const reason = placementRejection(def, state, extra.x, extra.y);
+    const reason = extraRejection(def, state, player, mainPlot, extra);
     if (reason !== null) return { ok: false, which: player, reason };
   }
 
@@ -320,7 +355,8 @@ export function resolveSimultaneous(
       cells[i] = resolveAdd(cells[i] as CellValue, d);
     }
   } catch {
-    // 個別合法なら合算も合法のはず。万一値域を外れたら安全側に倒して拒否する。
+    // extraRejection で同点超過は事前に弾くため通常到達しない防御網。
+    // 万一値域を外れたら安全側に倒して拒否する。
     return { ok: false, which: "black", reason: "illegal-landing" };
   }
 

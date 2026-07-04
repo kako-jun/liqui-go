@@ -13,7 +13,7 @@ import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
 import { createInitialState } from "./game/state";
 import type { MoveRights } from "./game/state";
-import { placementRejection, resolveSimultaneous, moveRejection } from "./game/rules";
+import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
 import type { PlaceKind, Phenomenon, Player } from "./game/stones";
 import type { PlotRejection, PlotInput, Plot, ExtraInput, ResolveEvent } from "./game/rules";
 import { BoardScene } from "./render/boardScene";
@@ -116,7 +116,7 @@ const REJECT_TEXT: Record<PlotRejection, string> = {
   "out-of-bounds": "盤の外",
   "not-your-half": "自分の0.5だけ動かせる",
   "not-adjacent": "隣接8マスのみ",
-  "illegal-landing": "自分の1石には乗れない",
+  "illegal-landing": "着地の値が石の上限(±1)を超える",
   "no-move-right": "1.5手の権利がない",
 };
 
@@ -262,8 +262,11 @@ scene.onPointClick = (x, y) => {
   const player = currentPlayer();
 
   // extra フェーズ: 追加ポア0.5 の着地点を選ぶ（空点のみ・ムーブ元選択は無い）。
+  // 権利・着点の合法性に加え、同一手番の main と同点に重なって合算が超過する場合まで
+  // extraRejection で入力時に弾く（resolve まで持ち越すとラウンド全破棄になるため即フィードバック）。
   if (isExtraPhase()) {
-    const reason = placementRejection(def, state, x, y);
+    const mainPlot = player === "black" ? blackPlot : whitePlot;
+    const reason = extraRejection(def, state, player, mainPlot, { x, y });
     if (reason !== null) {
       showReject(reason);
       return;
