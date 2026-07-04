@@ -328,9 +328,11 @@ function buildEvents(
     const w = whitePlot;
     const bTo = indexOf(def, b.toX, b.toY);
     const wTo = indexOf(def, w.toX, w.toY);
-    // tris: 同一着点にぶつかり、両移動元と着点が空く。
-    if (b.toX === w.toX && b.toY === w.toY) {
-      events.push({ x: b.toX, y: b.toY, phenomenon: "tris", after: finalCells[bTo] as CellValue });
+    // tris: 同一着点にぶつかり、両移動元「と着点」が空く（＝3点消滅）。着点が空くのは
+    // 元々空点だったとき（0.5+0.5 の同時ムーブは着点で ±0.5 が相殺し、着点は開始値のまま）。
+    // 着点に石が残る場合は真のトリス（3点空く）でないので、各ムーブの現象へフォールスルー。
+    if (b.toX === w.toX && b.toY === w.toY && finalCells[bTo] === 0) {
+      events.push({ x: b.toX, y: b.toY, phenomenon: "tris", after: 0 });
       return events;
     }
     // swap: 互いの移動元へ乗り込む（0.5 入替）。
