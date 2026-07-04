@@ -7,8 +7,8 @@ import type { BoardSizeDef } from "./boardDef";
 import { RULES } from "./boardDef";
 import type { Point } from "./coords";
 import { indexOf, inBounds, fromIndex } from "./coords";
-import type { Player, PlaceKind, Resolution } from "./stones";
-import { applyPlacement } from "./stones";
+import type { Player, PlaceKind, Resolution, Phenomenon, CellValue } from "./stones";
+import { applyPlacement, classifySimultaneous, delta } from "./stones";
 import type { GameState } from "./state";
 
 /** 着手を拒否する理由（UI フィードバック用）。置けるなら null。 */
@@ -75,6 +75,9 @@ export function tickCooldowns(cooldown: readonly number[]): number[] {
 /**
  * 1手を確定する（純粋）。元 state は変更しない。
  *
+ * 単一着手 primitive。同時プロット制（ルール①）の live フローは resolveSimultaneous。
+ * これは1者・1点の確定に使う下位関数として温存する（テストあり）。
+ *
  * cooldown モデル（不変条件・厳守）:
  *   押印値 = RULES.koCooldownTurns(=1)。
  *   tick（全点デクリメント）を先に行い、その後で触れた点へ押印する。
@@ -117,5 +120,123 @@ export function commitPlacement(
       turnCount: state.turnCount + 1,
     },
     resolution,
+  };
+}
+
+// ── 同時プロット制（ルール①） ───────────────────────────────────────────
+// 先手後手なし。両者の手を伏せて同時公開し、足し算で解決する。
+
+/** プロットされた1手（着手点と種類）。 */
+export interface Plot {
+  readonly x: number;
+  readonly y: number;
+  readonly kind: PlaceKind;
+}
+
+/** プロット入力。null = パス。 */
+export type PlotInput = Plot | null;
+
+/** 解決で起きた現象1件（表示・実況用）。 */
+export interface ResolveEvent {
+  readonly x: number;
+  readonly y: number;
+  readonly phenomenon: Phenomenon;
+  readonly after: CellValue;
+}
+
+/** resolveSimultaneous の戻り値。判別可能 union。 */
+export type SimResult =
+  | { ok: true; state: GameState; events: ResolveEvent[] }
+  | { ok: false; which: Player; reason: Rejection };
+
+/**
+ * 同時プロット制（ルール①）を1ラウンド解決する（純粋・元 state 不変）。
+ *
+ * 検証は両者とも同一の開始 state に対して独立に行う。両者が同じ空き点を狙うのは
+ * 合法（＝同点衝突）。占有・cooldown・盤外は各自不可。
+ *
+ * 解決の分岐:
+ *   - 両者非 null かつ同点 → 空きへ黒白の両デルタを同時加算（classifySimultaneous）。
+ *   - それ以外（別点、または片方 pass）→ 各 plot を順に applyPlacement（別点＝相互作用なし）。
+ *
+ * cooldown は commitPlacement と同じく tick→押印の順。touched（相殺で 0 になった点も
+ * 含む）に押印して相殺ループを防ぐ（design①）。同点は1回だけ押印する。
+ */
+export function resolveSimultaneous(
+  def: BoardSizeDef,
+  state: GameState,
+  blackPlot: PlotInput,
+  whitePlot: PlotInput,
+): SimResult {
+  // 1. 検証（両者とも開始 state 基準）。非 null のみ判定し、拒否理由が返れば which 付きで失敗。
+  if (blackPlot !== null) {
+    const reason = placementRejection(def, state, blackPlot.x, blackPlot.y);
+    if (reason !== null) return { ok: false, which: "black", reason };
+  }
+  if (whitePlot !== null) {
+    const reason = placementRejection(def, state, whitePlot.x, whitePlot.y);
+    if (reason !== null) return { ok: false, which: "white", reason };
+  }
+
+  // 2. 作業用クローン（元 state.cells は不変）。
+  let cells = state.cells.slice();
+  const events: ResolveEvent[] = [];
+  const touched: number[] = [];
+
+  // 3. 分岐。
+  const samePoint =
+    blackPlot !== null &&
+    whitePlot !== null &&
+    blackPlot.x === whitePlot.x &&
+    blackPlot.y === whitePlot.y;
+
+  if (samePoint) {
+    // 同点衝突。足し算の核 classifySimultaneous を経由（空きへ黒白デルタを同時加算）。
+    const i = indexOf(def, blackPlot.x, blackPlot.y);
+    const dB = delta("black", blackPlot.kind);
+    const dW = delta("white", whitePlot.kind);
+    const res = classifySimultaneous(dB, dW);
+    cells[i] = res.after;
+    events.push({ x: blackPlot.x, y: blackPlot.y, phenomenon: res.phenomenon, after: res.after });
+    touched.push(i); // 同点は1回だけ押印
+  } else {
+    // 別点、または片方 pass。非 null の各 plot を順に確定（別点なので相互作用なし＝空きへ place/pour）。
+    const plots: ReadonlyArray<readonly [Player, PlotInput]> = [
+      ["black", blackPlot],
+      ["white", whitePlot],
+    ];
+    for (const [player, plot] of plots) {
+      if (plot === null) continue;
+      const r = applyPlacement(def, cells, plot.x, plot.y, player, plot.kind);
+      cells = r.cells;
+      events.push({
+        x: plot.x,
+        y: plot.y,
+        phenomenon: r.resolution.phenomenon,
+        after: r.resolution.after,
+      });
+      touched.push(indexOf(def, plot.x, plot.y));
+    }
+  }
+
+  // 4. cooldown: 先に全点 tick、その後で touched へ押印（同ターンで即デクリメントされない）。
+  //    相殺（after 0）で空きに戻った点も押印して相殺ループを防ぐ。
+  const cooldown = tickCooldowns(state.cooldown);
+  for (const i of touched) {
+    cooldown[i] = RULES.koCooldownTurns;
+  }
+
+  // 5. 新 state を返す（moveRights 明示コピー・turnCount+1・純粋）。両 pass なら
+  //    cells 不変・events 空・cooldown は tick のみ・turnCount+1。
+  return {
+    ok: true,
+    state: {
+      ...state,
+      cells,
+      cooldown,
+      moveRights: { ...state.moveRights },
+      turnCount: state.turnCount + 1,
+    },
+    events,
   };
 }
