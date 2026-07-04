@@ -8,6 +8,7 @@ import {
   tickCooldowns,
   commitPlacement,
   resolveSimultaneous,
+  moveRejection,
 } from "./rules";
 import { createInitialState } from "./state";
 import { BOARD_SIZES } from "./boardDef";
@@ -389,8 +390,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 2, y: 2, kind: "stone" },
-      { x: 6, y: 6, kind: "stone" },
+      { type: "place", x: 2, y: 2, placeKind: "stone" },
+      { type: "place", x: 6, y: 6, placeKind: "stone" },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -407,8 +408,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 4, y: 4, kind: "stone" },
-      { x: 4, y: 4, kind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -424,8 +425,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 4, y: 4, kind: "stone" },
-      { x: 4, y: 4, kind: "pour" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "pour" },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -439,8 +440,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 4, y: 4, kind: "pour" },
-      { x: 4, y: 4, kind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "pour" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -454,8 +455,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 4, y: 4, kind: "pour" },
-      { x: 4, y: 4, kind: "pour" },
+      { type: "place", x: 4, y: 4, placeKind: "pour" },
+      { type: "place", x: 4, y: 4, placeKind: "pour" },
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -471,8 +472,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 5, y: 5, kind: "stone" }, // 黒は合法点
-      { x: 3, y: 3, kind: "stone" }, // 白は占有点
+      { type: "place", x: 5, y: 5, placeKind: "stone" }, // 黒は合法点
+      { type: "place", x: 3, y: 3, placeKind: "stone" }, // 白は占有点
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -489,8 +490,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 3, y: 3, kind: "stone" }, // 黒は占有点（先に判定される）
-      { x: 5, y: 5, kind: "stone" }, // 白は合法点
+      { type: "place", x: 3, y: 3, placeKind: "stone" }, // 黒は占有点（先に判定される）
+      { type: "place", x: 5, y: 5, placeKind: "stone" }, // 白は合法点
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -507,8 +508,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 6, y: 6, kind: "stone" }, // 黒は合法点
-      { x: 2, y: 2, kind: "stone" }, // 白は cooldown 点
+      { type: "place", x: 6, y: 6, placeKind: "stone" }, // 黒は合法点
+      { type: "place", x: 2, y: 2, placeKind: "stone" }, // 白は cooldown 点
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -524,8 +525,8 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 6, y: 6, kind: "stone" }, // 黒は合法点
-      { x: 9, y: 0, kind: "stone" }, // 白は盤外（lines=9）
+      { type: "place", x: 6, y: 6, placeKind: "stone" }, // 黒は合法点
+      { type: "place", x: 9, y: 0, placeKind: "stone" }, // 白は盤外（lines=9）
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -537,7 +538,12 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
 
   it("パス（黒 null）: 白だけ着手・events 1件・白点 cooldown=1・turnCount+1", () => {
     const state = createInitialState("9");
-    const r = resolveSimultaneous(def, state, null, { x: 6, y: 6, kind: "stone" });
+    const r = resolveSimultaneous(def, state, null, {
+      type: "place",
+      x: 6,
+      y: 6,
+      placeKind: "stone",
+    });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.state.cells[indexOf(def, 6, 6)]).toBe(-1);
@@ -570,12 +576,356 @@ describe("resolveSimultaneous — 同時プロット制（ルール①・足し�
     const r = resolveSimultaneous(
       def,
       state,
-      { x: 4, y: 4, kind: "stone" },
-      { x: 4, y: 4, kind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
+      { type: "place", x: 4, y: 4, placeKind: "stone" },
     );
     expect(r.ok).toBe(true);
     expect([...state.cells]).toEqual(cellsBefore);
     expect([...state.cooldown]).toEqual(cooldownBefore);
     expect(state.turnCount).toBe(0);
+  });
+});
+
+describe("moveRejection — ムーブ拒否理由（ルール③・生値 assert）", () => {
+  // 黒の 0.5 を (4,4) に置いた盤を基準にする（player=black・half=0.5）。
+  function withBlackHalf(x = 4, y = 4) {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, x, y)] = 0.5;
+    return state;
+  }
+
+  it("合法ムーブ（自分の0.5→隣接空点）は null", () => {
+    const state = withBlackHalf();
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBeNull();
+  });
+
+  it("from が盤外 → out-of-bounds", () => {
+    const state = createInitialState("9");
+    expect(
+      moveRejection(def, state, { type: "move", fromX: -1, fromY: 0, toX: 0, toY: 0 }, "black"),
+    ).toBe("out-of-bounds");
+  });
+
+  it("to が盤外（x=9,y=0）→ out-of-bounds（index=(0,1) へエイリアスさせない）", () => {
+    const state = withBlackHalf(8, 0);
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 8, fromY: 0, toX: 9, toY: 0 }, "black"),
+    ).toBe("out-of-bounds");
+  });
+
+  it("from が空 → not-your-half", () => {
+    const state = createInitialState("9");
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBe("not-your-half");
+  });
+
+  it("from が自分の1石 → not-your-half（1石は動けない）", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 1;
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBe("not-your-half");
+  });
+
+  it("from が相手の0.5 → not-your-half（自分の0.5からのみ）", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = -0.5; // 白の0.5
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBe("not-your-half");
+  });
+
+  it("to が隣接8マス外（2マス先）→ not-adjacent", () => {
+    const state = withBlackHalf();
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 6, toY: 6 }, "black"),
+    ).toBe("not-adjacent");
+  });
+
+  it("to === from（自己）→ not-adjacent（moveTargets に自己は含まれない）", () => {
+    const state = withBlackHalf();
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 4, toY: 4 }, "black"),
+    ).toBe("not-adjacent");
+  });
+
+  it("着地点が cooldown>0 → cooldown", () => {
+    const state = withBlackHalf();
+    state.cooldown[indexOf(def, 5, 5)] = 1;
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBe("cooldown");
+  });
+
+  it("着地結果が値域外（自分の1石へ乗る＝1.5）→ illegal-landing", () => {
+    const state = withBlackHalf();
+    state.cells[indexOf(def, 5, 5)] = 1; // 自分の1石
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "black"),
+    ).toBe("illegal-landing");
+  });
+
+  it("白の 0.5（-0.5）からのムーブも player=white なら合法（対称）", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = -0.5;
+    expect(
+      moveRejection(def, state, { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 }, "white"),
+    ).toBeNull();
+  });
+});
+
+describe("resolveSimultaneous — ムーブ／トリス／スワップ（ルール③・加算デルタ寄与）", () => {
+  it("空点移動(move): 黒0.5(4,4)→空点(5,5) → to=0.5・from=0・event move・from/to cooldown=1・turnCount+1", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 5, 5)]).toBe(0.5); // to へ 0.5 が乗る
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0); // from は空く
+    expect(r.events.length).toBe(1);
+    expect(r.events[0].phenomenon).toBe("move");
+    expect(r.events[0].after).toBe(0.5);
+    expect(r.state.cooldown[indexOf(def, 4, 4)]).toBe(1); // from へ押印
+    expect(r.state.cooldown[indexOf(def, 5, 5)]).toBe(1); // to へ押印
+    expect(r.state.turnCount).toBe(1);
+  });
+
+  it("cancel(move): 黒0.5(4,4)→白0.5(5,5) → その点0(cancel)・from 0", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5; // 黒0.5
+    state.cells[indexOf(def, 5, 5)] = -0.5; // 白0.5（隣接）
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 5, 5)]).toBe(0); // 相殺
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0);
+    expect(r.events[0].phenomenon).toBe("cancel");
+  });
+
+  it("solidify(move): 黒0.5(4,4)→黒0.5(5,5) → to=1(solidify)・from 0", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    state.cells[indexOf(def, 5, 5)] = 0.5; // 隣接する自分の0.5
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 5, 5)]).toBe(1); // 固まる
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0);
+    expect(r.events[0].phenomenon).toBe("solidify");
+  });
+
+  it("reduce(move): 黒0.5(4,4)→白1石(5,5) → to=-0.5(reduce)", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    state.cells[indexOf(def, 5, 5)] = -1; // 白1石（隣接）
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 5, 5)]).toBe(-0.5); // 削れて -0.5
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0);
+    expect(r.events[0].phenomenon).toBe("reduce");
+  });
+
+  it("自分の1石へ移動は拒否: 黒0.5(4,4)→黒1石(5,5) → {ok:false, which:black, reason:illegal-landing}・state 不変", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    state.cells[indexOf(def, 5, 5)] = 1; // 自分の1石
+    const cellsBefore = [...state.cells];
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.which).toBe("black");
+    expect(r.reason).toBe("illegal-landing");
+    expect([...state.cells]).toEqual(cellsBefore);
+    expect(state.turnCount).toBe(0);
+  });
+
+  it("隣接外拒否: 黒0.5(4,4)→(6,6)（2マス先）→ {ok:false, reason:not-adjacent}", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 6, toY: 6 },
+      null,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("not-adjacent");
+  });
+
+  it("非0.5移動拒否: from が空 → {ok:false, reason:not-your-half}", () => {
+    const state = createInitialState("9"); // (4,4) は空
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("not-your-half");
+  });
+
+  it("着地点 cooldown 拒否: to が cooldown>0 → {ok:false, reason:cooldown}", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    state.cooldown[indexOf(def, 5, 5)] = 1;
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("cooldown");
+  });
+
+  it("トリス: 黒 A(3,3)→D(4,3)・白 C(5,3)→D(4,3) → A,C,D すべて0・event tris", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 3, 3)] = 0.5; // A 黒0.5
+    state.cells[indexOf(def, 5, 3)] = -0.5; // C 白0.5
+    // D(4,3) は空点。A,C とも D の隣接。
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 3, fromY: 3, toX: 4, toY: 3 },
+      { type: "move", fromX: 5, fromY: 3, toX: 4, toY: 3 },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 3, 3)]).toBe(0); // A 空く
+    expect(r.state.cells[indexOf(def, 5, 3)]).toBe(0); // C 空く
+    expect(r.state.cells[indexOf(def, 4, 3)]).toBe(0); // D 空く（デルタ相殺）
+    expect(r.events.length).toBe(1);
+    expect(r.events[0].phenomenon).toBe("tris");
+    expect(r.events[0].after).toBe(0);
+    // 3点すべて cooldown 押印。
+    expect(r.state.cooldown[indexOf(def, 3, 3)]).toBe(1);
+    expect(r.state.cooldown[indexOf(def, 5, 3)]).toBe(1);
+    expect(r.state.cooldown[indexOf(def, 4, 3)]).toBe(1);
+  });
+
+  it("スワップ: 黒 A(4,4)→B(5,4)・白 B(5,4)→A(4,4) → A=-0.5(白)・B=0.5(黒)・event swap×2", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5; // A 黒0.5
+    state.cells[indexOf(def, 5, 4)] = -0.5; // B 白0.5（隣接）
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 4 },
+      { type: "move", fromX: 5, fromY: 4, toX: 4, toY: 4 },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(-0.5); // A は白の0.5に
+    expect(r.state.cells[indexOf(def, 5, 4)]).toBe(0.5); // B は黒の0.5に
+    expect(r.events.length).toBe(2);
+    expect(r.events.every((e) => e.phenomenon === "swap")).toBe(true);
+  });
+
+  it("place と move の混在: 黒 place(0,0)・白 move(8,8)→(7,7) → 両方独立に反映", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 8, 8)] = -0.5; // 白0.5
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "place", x: 0, y: 0, placeKind: "stone" },
+      { type: "move", fromX: 8, fromY: 8, toX: 7, toY: 7 },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 0, 0)]).toBe(1); // 黒の着手
+    expect(r.state.cells[indexOf(def, 7, 7)]).toBe(-0.5); // 白の移動先
+    expect(r.state.cells[indexOf(def, 8, 8)]).toBe(0); // 白の移動元は空く
+    expect(r.events.length).toBe(2);
+    expect(r.events.map((e) => e.phenomenon).sort()).toEqual(["move", "place"]);
+  });
+
+  it("チェーン: 黒 A(3,4)→B(4,4)・白 B(4,4)→C(5,4)（一方の from=他方の to・非swap） → A=0/B=0.5(黒)/C=-0.5(白)・throwなし", () => {
+    // 共有セル B の net デルタが相殺せず ±0.5 残る唯一の重なり型。個別合法⇒合算合法
+    // （値域 {-1,-0.5,0,0.5,1} に収まる）ことを回帰から守る。
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 3, 4)] = 0.5; // A 黒0.5
+    state.cells[indexOf(def, 4, 4)] = -0.5; // B 白0.5（A・C 双方に隣接）
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 3, fromY: 4, toX: 4, toY: 4 }, // 黒 A→B
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 4 }, // 白 B→C
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 3, 4)]).toBe(0); // A 空く（黒が抜ける）
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0.5); // B: 白抜け(-0.5→0)＋黒着地(+0.5)=黒0.5
+    expect(r.state.cells[indexOf(def, 5, 4)]).toBe(-0.5); // C 白0.5が着地
+    // 特殊(tris/swap)でないので各ムーブを独立ラベル（近似・盤面は上のとおり正）。
+    expect(r.events.length).toBe(2);
+  });
+
+  it("純粋性: freeze した元 state でも壊れず（ムーブ経路）turnCount 不変", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    const cellsBefore = [...state.cells];
+    const cooldownBefore = [...state.cooldown];
+    Object.freeze(state.cells);
+    Object.freeze(state.cooldown);
+    Object.freeze(state);
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    expect([...state.cells]).toEqual(cellsBefore);
+    expect([...state.cooldown]).toEqual(cooldownBefore);
+    expect(state.turnCount).toBe(0);
+  });
+
+  it("純粋性: moveRights を freeze しても壊れず、戻り値は別参照の深コピー（#5 の巻き戻し防止）", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 4, 4)] = 0.5;
+    Object.freeze(state.moveRights); // resolve が元 moveRights に書けば TypeError で即失敗
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { type: "move", fromX: 4, fromY: 4, toX: 5, toY: 5 },
+      null,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.moveRights).not.toBe(state.moveRights); // 参照が切れている
+    expect(r.state.moveRights).toEqual(state.moveRights); // 値は同一
   });
 });

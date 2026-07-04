@@ -17,6 +17,7 @@ const COLORS = {
   white: 0xeef4fb,
   legal: 0x4fe08a, // ホバー標示（置ける）＝緑
   illegal: 0xe0544f, // ホバー標示（置けない）＝赤
+  moveSource: 0xf5b942, // ムーブ元の選択マーカー＝琥珀（ホバーリングと別色）
 };
 
 // 交点平面の y（格子線と同じ高さ）。raycast で拾う水平面。
@@ -59,6 +60,11 @@ export class BoardScene {
   private readonly hoverRing: THREE.Mesh;
   private readonly hoverRingMat: THREE.MeshBasicMaterial;
   private legalityProbe?: (x: number, y: number) => boolean;
+
+  // ムーブ元の選択マーカー（ルール③）。ホバーリングとは別の1つを使い回す。
+  // 判定は持ち込まない。main.ts が座標を渡して出す/隠す。
+  private readonly moveSourceRing: THREE.Mesh;
+  private readonly moveSourceRingMat: THREE.MeshBasicMaterial;
 
   private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
@@ -109,6 +115,21 @@ export class BoardScene {
     this.hoverRing.visible = false;
     this.scene.add(this.hoverRing);
 
+    // ムーブ元の選択マーカー（ホバーリングより一回り大きい琥珀リング）。初期は隠す。
+    this.moveSourceRingMat = new THREE.MeshBasicMaterial({
+      color: COLORS.moveSource,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this.moveSourceRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.46, 0.06, 8, 32),
+      this.moveSourceRingMat,
+    );
+    this.moveSourceRing.rotation.x = -Math.PI / 2;
+    this.moveSourceRing.position.y = 0.04;
+    this.moveSourceRing.visible = false;
+    this.scene.add(this.moveSourceRing);
+
     // pointer イベントは canvas（renderer.domElement）に張る。
     const el = this.renderer.domElement;
     el.addEventListener("pointerdown", this.onPointerDown);
@@ -127,6 +148,19 @@ export class BoardScene {
    */
   setLegalityProbe(fn: (x: number, y: number) => boolean): void {
     this.legalityProbe = fn;
+  }
+
+  /**
+   * ムーブ元の選択マーカーを (x,y) に出す（null で隠す）。ルール③のムーブ入力用。
+   * 合法判定は持ち込まない（座標を受けて出す/隠すだけ）。配線層 main.ts が制御する。
+   */
+  setMoveSource(p: { x: number; y: number } | null): void {
+    if (!p) {
+      this.moveSourceRing.visible = false;
+      return;
+    }
+    this.moveSourceRing.position.set(p.x, 0.04, p.y);
+    this.moveSourceRing.visible = true;
   }
 
   /**
@@ -309,6 +343,9 @@ export class BoardScene {
     el.removeEventListener("pointercancel", this.onPointerCancel);
     el.removeEventListener("pointerleave", this.onPointerLeave);
     window.removeEventListener("resize", this.onResize);
+    // 選択マーカーのジオメトリ/マテリアルを明示解放（renderer.dispose では解放されない）。
+    this.moveSourceRing.geometry.dispose();
+    this.moveSourceRingMat.dispose();
     this.renderer.dispose();
     el.remove();
   }
