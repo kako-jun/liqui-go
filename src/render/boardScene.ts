@@ -4,7 +4,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { BoardSizeDef } from "../game/boardDef";
 import type { GameState } from "../game/state";
-import { fromIndex } from "../game/coords";
+// inBounds の型・関数 import は「描画→game」の一方向依存なので規律に反しない。
+// 合法判定・commit は持ち込まない（それは配線層 main.ts の責務）。
+import { fromIndex, inBounds } from "../game/coords";
 
 const COLORS = {
   bg: 0x0a0e14,
@@ -13,7 +15,16 @@ const COLORS = {
   star: 0x6fb0e0,
   black: 0x101820,
   white: 0xeef4fb,
+  legal: 0x4fe08a, // ホバー標示（置ける）＝緑
+  illegal: 0xe0544f, // ホバー標示（置けない）＝赤
 };
+
+// 交点平面の y（格子線と同じ高さ）。raycast で拾う水平面。
+const POINT_PLANE_Y = 0.01;
+// スナップ許容距離（board 単位）。最近傍交点からこれ以内でだけ着手扱いにする。
+const SNAP_THRESHOLD = 0.5;
+// クリックとカメラドラッグの弁別しきい値（px）。これ未満の移動をクリックとみなす。
+const CLICK_MOVE_THRESHOLD_PX = 6;
 
 export class BoardScene {
   private readonly renderer: THREE.WebGLRenderer;
@@ -24,6 +35,29 @@ export class BoardScene {
   private readonly def: BoardSizeDef;
   private running = false;
   private readonly onResize = () => this.resize();
+
+  /** 交点クリック通知。配線層（main.ts）が着手判定・commit を行う。 */
+  onPointClick?: (x: number, y: number) => void;
+
+  // raycast 用の使い回しオブジェクト（毎フレーム new を避ける）。
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointerPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -POINT_PLANE_Y);
+  private readonly ndc = new THREE.Vector2();
+  private readonly hitPoint = new THREE.Vector3();
+
+  // クリック / ドラッグ弁別のための pointerdown 位置。
+  private downX = 0;
+  private downY = 0;
+  private downTracked = false;
+
+  // ホバー標示のリング（1つを使い回す）。合法性は外注注入の probe で色分け。
+  private readonly hoverRing: THREE.Mesh;
+  private readonly hoverRingMat: THREE.MeshBasicMaterial;
+  private legalityProbe?: (x: number, y: number) => boolean;
+
+  private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
+  private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
+  private readonly onPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
 
   constructor(
     private readonly container: HTMLElement,
@@ -54,8 +88,89 @@ export class BoardScene {
     this.buildBoard();
     this.scene.add(this.stoneGroup);
 
+    // ホバー標示リング（薄い水平トーラス）。初期は隠す。
+    this.hoverRingMat = new THREE.MeshBasicMaterial({
+      color: COLORS.legal,
+      transparent: true,
+      opacity: 0.85,
+    });
+    this.hoverRing = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.05, 8, 32), this.hoverRingMat);
+    this.hoverRing.rotation.x = -Math.PI / 2; // 盤面に寝かせる
+    this.hoverRing.position.y = 0.03;
+    this.hoverRing.visible = false;
+    this.scene.add(this.hoverRing);
+
+    // pointer イベントは canvas（renderer.domElement）に張る。
+    const el = this.renderer.domElement;
+    el.addEventListener("pointerdown", this.onPointerDown);
+    el.addEventListener("pointerup", this.onPointerUp);
+    el.addEventListener("pointermove", this.onPointerMove);
+
     window.addEventListener("resize", this.onResize);
     this.resize();
+  }
+
+  /**
+   * 合法性 probe を注入する。BoardScene 自身は game を判定に使わず、色を塗るだけ。
+   * main.ts が (x,y)=>canPlaceAt(def, state, x, y) を渡す。
+   */
+  setLegalityProbe(fn: (x: number, y: number) => boolean): void {
+    this.legalityProbe = fn;
+  }
+
+  /**
+   * クリック座標（clientX/Y）から最近傍の整数交点を拾う。
+   * 交点平面に raycast し、round でスナップ、盤内かつスナップ距離が閾値内なら返す。
+   */
+  private pickPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    this.ndc.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.ndc, this.camera);
+    // 平面に当たらない（水平視線）場合は null。
+    if (!this.raycaster.ray.intersectPlane(this.pointerPlane, this.hitPoint)) return null;
+
+    const x = Math.round(this.hitPoint.x);
+    const y = Math.round(this.hitPoint.z); // 交点は XZ 平面配置（z が y 座標）
+    if (!inBounds(this.def, x, y)) return null;
+    // スナップ距離チェック（最近傍交点から離れすぎていたら無効）。
+    const dx = this.hitPoint.x - x;
+    const dz = this.hitPoint.z - y;
+    if (Math.hypot(dx, dz) > SNAP_THRESHOLD) return null;
+    return { x, y };
+  }
+
+  private handlePointerDown(e: PointerEvent): void {
+    if (e.button !== 0) return; // 左ボタンのみ着手対象
+    this.downX = e.clientX;
+    this.downY = e.clientY;
+    this.downTracked = true;
+  }
+
+  private handlePointerUp(e: PointerEvent): void {
+    if (!this.downTracked) return;
+    this.downTracked = false;
+    // カメラドラッグ（OrbitControls）で動いた分が大きければクリックとみなさない。
+    const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
+    if (moved >= CLICK_MOVE_THRESHOLD_PX) return;
+    const p = this.pickPoint(e.clientX, e.clientY);
+    if (p) this.onPointClick?.(p.x, p.y);
+  }
+
+  private handlePointerMove(e: PointerEvent): void {
+    const p = this.pickPoint(e.clientX, e.clientY);
+    if (!p) {
+      this.hoverRing.visible = false;
+      return;
+    }
+    // 合法なら緑、非合法なら赤。probe 未注入なら緑（中立）で標示だけ出す。
+    const legal = this.legalityProbe ? this.legalityProbe(p.x, p.y) : true;
+    this.hoverRingMat.color.setHex(legal ? COLORS.legal : COLORS.illegal);
+    this.hoverRing.position.set(p.x, 0.03, p.y);
+    this.hoverRing.visible = true;
   }
 
   /** 盤（板・格子線・星）を組む。GameState に依存しない静的ジオメトリ。 */
@@ -136,8 +251,12 @@ export class BoardScene {
 
   dispose(): void {
     this.running = false;
+    const el = this.renderer.domElement;
+    el.removeEventListener("pointerdown", this.onPointerDown);
+    el.removeEventListener("pointerup", this.onPointerUp);
+    el.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("resize", this.onResize);
     this.renderer.dispose();
-    this.renderer.domElement.remove();
+    el.remove();
   }
 }
