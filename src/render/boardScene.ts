@@ -7,6 +7,7 @@ import type { GameState } from "../game/state";
 // inBounds の型・関数 import は「描画→game」の一方向依存なので規律に反しない。
 // 合法判定・commit は持ち込まない（それは配線層 main.ts の責務）。
 import { fromIndex, inBounds } from "../game/coords";
+import type { Player } from "../game/stones";
 
 const COLORS = {
   bg: 0x0a0e14,
@@ -32,6 +33,8 @@ export class BoardScene {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: OrbitControls;
   private readonly stoneGroup = new THREE.Group();
+  // pending plot のゴースト標示（半透明マーカー）。石とは別 Group で使い回す。
+  private readonly ghostGroup = new THREE.Group();
   private readonly def: BoardSizeDef;
   private running = false;
   private readonly onResize = () => this.resize();
@@ -96,6 +99,7 @@ export class BoardScene {
 
     this.buildBoard();
     this.scene.add(this.stoneGroup);
+    this.scene.add(this.ghostGroup);
 
     // ホバー標示リング（薄い水平トーラス）。初期は隠す。
     this.hoverRingMat = new THREE.MeshBasicMaterial({
@@ -273,6 +277,28 @@ export class BoardScene {
       mesh.scale.y = 0.55; // 碁石らしく平たく
       mesh.position.set(x, radius * 0.55, y);
       this.stoneGroup.add(mesh);
+    }
+  }
+
+  /**
+   * pending plot のゴースト（半透明の手番色マーカー、石より一回り小）を描く。
+   * 判定は持ち込まない＝座標と色を受け取って描くだけ。空配列で消える。
+   * 使い回しの ghostGroup を clear→再構築する。
+   */
+  setGhosts(ghosts: { x: number; y: number; player: Player }[]): void {
+    this.ghostGroup.clear();
+    const radius = 0.28; // full=0.42 / half=0.3 より小さく
+    for (const g of ghosts) {
+      const isBlack = g.player === "black";
+      const mat = new THREE.MeshBasicMaterial({
+        color: isBlack ? COLORS.black : COLORS.white,
+        transparent: true,
+        opacity: 0.4,
+      });
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 12), mat);
+      mesh.scale.y = 0.55;
+      mesh.position.set(g.x, radius * 0.55, g.y);
+      this.ghostGroup.add(mesh);
     }
   }
 
