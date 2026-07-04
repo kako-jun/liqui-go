@@ -7,6 +7,7 @@ import {
   legalPlacements,
   tickCooldowns,
   commitPlacement,
+  resolveSimultaneous,
 } from "./rules";
 import { createInitialState } from "./state";
 import { BOARD_SIZES } from "./boardDef";
@@ -379,5 +380,149 @@ describe("commitPlacement — 1手確定（純粋・tick→押印順序）", () 
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(["place", "pour"]).toContain(r2.resolution.phenomenon);
+  });
+});
+
+describe("resolveSimultaneous — 同時プロット制（ルール①・足し算解決）", () => {
+  it("別点独立: 黒(2,2)石＋白(6,6)石 → 両点に 1/-1・events 2件・両点 cooldown=1・turnCount+1", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 2, y: 2, kind: "stone" },
+      { x: 6, y: 6, kind: "stone" },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 2, 2)]).toBe(1);
+    expect(r.state.cells[indexOf(def, 6, 6)]).toBe(-1);
+    expect(r.events.length).toBe(2);
+    expect(r.state.cooldown[indexOf(def, 2, 2)]).toBe(1);
+    expect(r.state.cooldown[indexOf(def, 6, 6)]).toBe(1);
+    expect(r.state.turnCount).toBe(1);
+  });
+
+  it("同点 capture: 黒石＋白石 同点 → after 0（空）・event capture・その点 cooldown=1（相殺点も押印）", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 4, y: 4, kind: "stone" },
+      { x: 4, y: 4, kind: "stone" },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0);
+    expect(r.events.length).toBe(1);
+    expect(r.events[0].phenomenon).toBe("capture");
+    expect(r.events[0].after).toBe(0);
+    expect(r.state.cooldown[indexOf(def, 4, 4)]).toBe(1); // after 0 でも押印（相殺ループ防止）
+  });
+
+  it("同点 reduce: 黒石＋白ポア → after 0.5・reduce", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 4, y: 4, kind: "stone" },
+      { x: 4, y: 4, kind: "pour" },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0.5);
+    expect(r.events[0].phenomenon).toBe("reduce");
+    expect(r.events[0].after).toBe(0.5);
+  });
+
+  it("同点 reduce: 黒ポア＋白石 → after -0.5・reduce", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 4, y: 4, kind: "pour" },
+      { x: 4, y: 4, kind: "stone" },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(-0.5);
+    expect(r.events[0].phenomenon).toBe("reduce");
+    expect(r.events[0].after).toBe(-0.5);
+  });
+
+  it("同点 cancel: 黒ポア＋白ポア → after 0・cancel・cooldown=1", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 4, y: 4, kind: "pour" },
+      { x: 4, y: 4, kind: "pour" },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 4, 4)]).toBe(0);
+    expect(r.events[0].phenomenon).toBe("cancel");
+    expect(r.state.cooldown[indexOf(def, 4, 4)]).toBe(1);
+  });
+
+  it("非合法 plot: 白が占有点(3,3)を狙う → {ok:false, which:white, reason:occupied}・state 不変", () => {
+    const state = createInitialState("9");
+    state.cells[indexOf(def, 3, 3)] = 1;
+    const cellsBefore = [...state.cells];
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 5, y: 5, kind: "stone" }, // 黒は合法点
+      { x: 3, y: 3, kind: "stone" }, // 白は占有点
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.which).toBe("white");
+    expect(r.reason).toBe("occupied");
+    expect([...state.cells]).toEqual(cellsBefore); // 元 state 不変
+    expect(state.turnCount).toBe(0);
+  });
+
+  it("パス（黒 null）: 白だけ着手・events 1件・白点 cooldown=1・turnCount+1", () => {
+    const state = createInitialState("9");
+    const r = resolveSimultaneous(def, state, null, { x: 6, y: 6, kind: "stone" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells[indexOf(def, 6, 6)]).toBe(-1);
+    expect(r.events.length).toBe(1);
+    expect(r.state.cooldown[indexOf(def, 6, 6)]).toBe(1);
+    expect(r.state.turnCount).toBe(1);
+  });
+
+  it("両パス（両 null）: cells 不変・events 空・turnCount+1・cooldown は tick のみ（2→1）", () => {
+    const state = createInitialState("9");
+    state.cooldown[indexOf(def, 0, 0)] = 2;
+    const cellsBefore = [...state.cells];
+    const r = resolveSimultaneous(def, state, null, null);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.cells).toEqual(cellsBefore);
+    expect(r.events.length).toBe(0);
+    expect(r.state.turnCount).toBe(1);
+    expect(r.state.cooldown[indexOf(def, 0, 0)]).toBe(1); // tick で 2→1
+  });
+
+  it("純粋性: freeze した元 state.cells/cooldown でも壊れず turnCount 不変", () => {
+    const state = createInitialState("9");
+    state.cooldown[indexOf(def, 0, 0)] = 2;
+    const cellsBefore = [...state.cells];
+    const cooldownBefore = [...state.cooldown];
+    Object.freeze(state.cells);
+    Object.freeze(state.cooldown);
+    Object.freeze(state);
+    const r = resolveSimultaneous(
+      def,
+      state,
+      { x: 4, y: 4, kind: "stone" },
+      { x: 4, y: 4, kind: "stone" },
+    );
+    expect(r.ok).toBe(true);
+    expect([...state.cells]).toEqual(cellsBefore);
+    expect([...state.cooldown]).toEqual(cooldownBefore);
+    expect(state.turnCount).toBe(0);
   });
 });

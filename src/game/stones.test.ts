@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { delta, resolveAdd, classify } from "./stones";
+import { delta, resolveAdd, classify, classifySimultaneous } from "./stones";
 
 describe("delta — プレイヤー×着手種類の符号と大きさ", () => {
   it("黒の1石は +1、黒のポアは +0.5", () => {
@@ -51,5 +51,27 @@ describe("classify — 現象の命名", () => {
   it("相手の0.5に1石をぶつける手は存在しない（1は動けない）→ 例外", () => {
     expect(() => classify(-0.5, 1)).toThrow(RangeError);
     expect(() => classify(0.5, -1)).toThrow(RangeError);
+  });
+});
+
+describe("classifySimultaneous — 同点同時着手（ルール①・空きへ黒白両デルタ加算）", () => {
+  // design.md ①同時着手の表と一致すること（返り値の生値を直接検証）。
+  it("(1,-1) → after 0・capture（相討ち）", () => {
+    expect(classifySimultaneous(1, -1)).toEqual({ after: 0, phenomenon: "capture" });
+  });
+  it("(1,-0.5) → after 0.5・reduce（黒石＋白ポア）", () => {
+    expect(classifySimultaneous(1, -0.5)).toEqual({ after: 0.5, phenomenon: "reduce" });
+  });
+  it("(0.5,-1) → after -0.5・reduce（黒ポア＋白石）", () => {
+    expect(classifySimultaneous(0.5, -1)).toEqual({ after: -0.5, phenomenon: "reduce" });
+  });
+  it("(0.5,-0.5) → after 0・cancel（相殺）", () => {
+    expect(classifySimultaneous(0.5, -0.5)).toEqual({ after: 0, phenomenon: "cancel" });
+  });
+  it("前提違反（dBlack<0 / dWhite>0 / どちらか 0）は RangeError", () => {
+    expect(() => classifySimultaneous(-1, -1)).toThrow(RangeError); // dBlack<0
+    expect(() => classifySimultaneous(1, 1)).toThrow(RangeError); // dWhite>0
+    expect(() => classifySimultaneous(0, -1)).toThrow(RangeError); // dBlack=0
+    expect(() => classifySimultaneous(1, 0)).toThrow(RangeError); // dWhite=0
   });
 });
