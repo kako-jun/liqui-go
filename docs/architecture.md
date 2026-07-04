@@ -9,16 +9,16 @@ src/
 ├── game/            ロジック層。Three.js を一切 import しない純粋ロジック
 │   ├── boardDef.ts    定義データ（不変）: 盤サイズ・星・ルール定数。実行時状態を持たない
 │   ├── coords.ts      座標 ↔ インデックス変換、ムーブ可能点（純粋関数）
-│   ├── stones.ts      足し算エンジン（核）: delta / resolveAdd / classify / applyPlacement
+│   ├── stones.ts      足し算エンジン（核）: delta / resolveAdd / classify / classifySimultaneous / applyPlacement
 │   ├── stones.test.ts エンジンの境界値テスト
-│   ├── rules.ts       合法手判定とターン確定（純粋）: canPlaceAt / placementRejection / legalPlacements / tickCooldowns / commitPlacement
-│   ├── rules.test.ts  合法手判定・cooldown 遷移・純粋性の境界値テスト
+│   ├── rules.ts       合法手判定とターン確定（純粋）: canPlaceAt / placementRejection / legalPlacements / tickCooldowns / commitPlacement / resolveSimultaneous（同時プロット解決・ルール①）
+│   ├── rules.test.ts  合法手判定・cooldown 遷移・同時着手・純粋性の境界値テスト
 │   └── state.ts       実行時状態 GameState（完全シリアライズ可能）
 └── render/          描画層。GameState を読んで描くだけ
-    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー・raycast 交点ピック（onPointClick / setLegalityProbe / ホバー標示）
+    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー・raycast 交点ピック（onPointClick / setLegalityProbe / setGhosts / ホバー標示）
 ```
 
-`main.ts` が両層を配線する（state を作り、scene に渡し、クリック→`commitPlacement`→再描画をつなぐ）。合法手判定は `game/rules.ts`、描画は `render` に閉じ、`render` は合法性を probe 関数注入で受け取るだけで判定ロジックを持たない。
+`main.ts` が両層を配線する（state を作り、scene に渡し、黒→白の2段プロット→`resolveSimultaneous`→再描画をつなぐ・ルール① 同時プロット制）。合法手判定は `game/rules.ts`、描画は `render` に閉じ、`render` は合法性を probe 関数注入で受け取り・pending plot を `setGhosts` で描くだけで判定ロジックを持たない。同点同時着手は `classifySimultaneous` が「空きセルへ黒白両デルタを同時加算」して足し算核で解決する（capture / reduce / cancel）。
 
 ## 設計規律（dev-doctrine 準拠）
 
