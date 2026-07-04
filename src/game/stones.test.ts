@@ -74,4 +74,7 @@ describe("classifySimultaneous — 同点同時着手（ルール①・空きへ
     expect(() => classifySimultaneous(0, -1)).toThrow(RangeError); // dBlack=0
     expect(() => classifySimultaneous(1, 0)).toThrow(RangeError); // dWhite=0
   });
+  it("符号は合っても大きさが {0.5,1} 以外（例 ±0.3）は RangeError（reduce 誤ラベル防止）", () => {
+    expect(() => classifySimultaneous(0.3, -0.3)).toThrow(RangeError);
+  });
 });

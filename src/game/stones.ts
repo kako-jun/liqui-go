@@ -110,9 +110,12 @@ export function classify(before: CellValue, d: number): Resolution {
  * という別経路なので、判定を混ぜず専用にここで解く。値域検証は resolveAdd に委ねる。
  */
 export function classifySimultaneous(dBlack: number, dWhite: number): Resolution {
-  if (!(dBlack > 0 && dWhite < 0)) {
+  // 符号だけでなく大きさも縛る。各 |d|∈{0.5,1} を外れると（例 0.3）after=0 でも
+  // bothStone/bothPour の分類が崩れ、reduce と誤ラベルし得るため前提で弾く。
+  const okMag = (d: number) => Math.abs(d) === 0.5 || Math.abs(d) === 1;
+  if (!(dBlack > 0 && dWhite < 0 && okMag(dBlack) && okMag(dWhite))) {
     throw new RangeError(
-      `classifySimultaneous は dBlack>0 かつ dWhite<0 を前提とする（黒+ / 白-）。received dBlack=${dBlack}, dWhite=${dWhite}`,
+      `classifySimultaneous は dBlack>0 & dWhite<0 かつ各 |d|∈{0.5,1} が前提（黒+ / 白-）。received dBlack=${dBlack}, dWhite=${dWhite}`,
     );
   }
   // 足し算の核を経由して合法値域を検証（空き 0 に両デルタを同時加算）。

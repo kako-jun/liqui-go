@@ -15,10 +15,10 @@ src/
 │   ├── rules.test.ts  合法手判定・cooldown 遷移・同時着手・純粋性の境界値テスト
 │   └── state.ts       実行時状態 GameState（完全シリアライズ可能）
 └── render/          描画層。GameState を読んで描くだけ
-    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー・raycast 交点ピック（onPointClick / setLegalityProbe / setGhosts / ホバー標示）
+    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー・raycast 交点ピック（onPointClick / setLegalityProbe / ホバー標示）
 ```
 
-`main.ts` が両層を配線する（state を作り、scene に渡し、黒→白の2段プロット→`resolveSimultaneous`→再描画をつなぐ・ルール① 同時プロット制）。合法手判定は `game/rules.ts`、描画は `render` に閉じ、`render` は合法性を probe 関数注入で受け取り・pending plot を `setGhosts` で描くだけで判定ロジックを持たない。同点同時着手は `classifySimultaneous` が「空きセルへ黒白両デルタを同時加算」して足し算核で解決する（capture / reduce / cancel）。
+`main.ts` が両層を配線する（state を作り、scene に渡し、黒→白の2段プロット→`resolveSimultaneous`→再描画をつなぐ・ルール① 同時プロット制）。プロット中は位置を盤に描かず（伏せ）、resolve 時に両手を同時に `setState` で反映して公開する。合法手判定は `game/rules.ts`、描画は `render` に閉じ、`render` は合法性を probe 関数注入で受け取るだけで判定ロジックを持たない。同点同時着手は `classifySimultaneous` が「空きセルへ黒白両デルタを同時加算」して足し算核で解決する（capture / reduce / cancel）。
 
 ## 設計規律（dev-doctrine 準拠）
 

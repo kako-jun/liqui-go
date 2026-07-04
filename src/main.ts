@@ -112,7 +112,6 @@ function resolveRound(): void {
   blackPlot = null;
   whitePlot = null;
   phase = "black-plot";
-  scene.setGhosts([]); // 伏せ表現: プロット中はゴーストを出さない
   updateHud();
   scene.refreshHover(); // 盤が変わったのでホバー色（緑/赤）を即再評価
 }
@@ -150,7 +149,7 @@ scene.onPointClick = (x, y) => {
   if (phase === "black-plot") {
     blackPlot = { x, y, kind: currentKind };
     phase = "white-plot";
-    // 伏せる: 黒のゴーストは見せない（setGhosts([]) のまま）。位置を先に見せない最小表現。
+    // 伏せる: 黒の位置は盤に描かない。resolve 時に両手を同時に setState で公開する。
     updateHud();
   } else {
     whitePlot = { x, y, kind: currentKind };
