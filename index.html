@@ -33,6 +33,9 @@
           12px/1.5 ui-monospace,
           monospace;
         user-select: none;
+        /* パネル背景はクリックを盤に通す。実際に操作するボタンだけ pointer-events を
+           復活させ、HUD 領域が交点クリックを塞ぐ死角にならないようにする。 */
+        pointer-events: none;
       }
       #hud-panel {
         background: rgba(10, 18, 28, 0.72);
@@ -58,6 +61,7 @@
         border-radius: 4px;
         padding: 3px 10px;
         cursor: pointer;
+        pointer-events: auto; /* ボタンだけクリックを受ける（#hud は none） */
       }
       #hud button.active {
         background: #2f6fa0;

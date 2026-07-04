@@ -50,6 +50,11 @@ export class BoardScene {
   private downY = 0;
   private downTracked = false;
 
+  // 最後のポインタ位置。着手後に同じ場所のホバー色を再評価する（refreshHover）ために保持。
+  private lastPointerX = 0;
+  private lastPointerY = 0;
+  private hasLastPointer = false;
+
   // ホバー標示のリング（1つを使い回す）。合法性は外注注入の probe で色分け。
   private readonly hoverRing: THREE.Mesh;
   private readonly hoverRingMat: THREE.MeshBasicMaterial;
@@ -58,6 +63,8 @@ export class BoardScene {
   private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
   private readonly onPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
+  private readonly onPointerCancel = () => this.handlePointerCancel();
+  private readonly onPointerLeave = () => this.handlePointerLeave();
 
   constructor(
     private readonly container: HTMLElement,
@@ -107,6 +114,8 @@ export class BoardScene {
     el.addEventListener("pointerdown", this.onPointerDown);
     el.addEventListener("pointerup", this.onPointerUp);
     el.addEventListener("pointermove", this.onPointerMove);
+    el.addEventListener("pointercancel", this.onPointerCancel);
+    el.addEventListener("pointerleave", this.onPointerLeave);
 
     window.addEventListener("resize", this.onResize);
     this.resize();
@@ -150,6 +159,14 @@ export class BoardScene {
     this.downX = e.clientX;
     this.downY = e.clientY;
     this.downTracked = true;
+    // ポインタキャプチャで、canvas 外で離しても pointerup を必ず受け取る
+    // （downTracked が張り付いて次 down まで残るのを防ぐ）。合成イベント等で
+    // pointerId が無い場合に備えて try/catch で握りつぶす。
+    try {
+      this.renderer.domElement.setPointerCapture(e.pointerId);
+    } catch {
+      /* pointerId が無い合成イベント等では無視 */
+    }
   }
 
   private handlePointerUp(e: PointerEvent): void {
@@ -162,8 +179,36 @@ export class BoardScene {
     if (p) this.onPointClick?.(p.x, p.y);
   }
 
+  private handlePointerCancel(): void {
+    // ジェスチャ中断（pointercancel）。クリック追跡をリセットして張り付きを防ぐ。
+    this.downTracked = false;
+  }
+
+  private handlePointerLeave(): void {
+    // canvas から出たらホバー標示を消し、最後の位置も忘れる。
+    this.hoverRing.visible = false;
+    this.hasLastPointer = false;
+  }
+
   private handlePointerMove(e: PointerEvent): void {
-    const p = this.pickPoint(e.clientX, e.clientY);
+    this.lastPointerX = e.clientX;
+    this.lastPointerY = e.clientY;
+    this.hasLastPointer = true;
+    this.updateHoverAt(e.clientX, e.clientY);
+  }
+
+  /**
+   * 直近のポインタ位置でホバー標示を更新する。着手後に呼べば、置いた点が
+   * occupied/cooldown になった結果（緑→赤）を次のマウス移動を待たずに反映できる。
+   */
+  refreshHover(): void {
+    if (!this.hasLastPointer) return;
+    this.updateHoverAt(this.lastPointerX, this.lastPointerY);
+  }
+
+  /** clientX/Y の交点にホバーリングを合わせ、probe で合法=緑/非合法=赤に塗る。 */
+  private updateHoverAt(clientX: number, clientY: number): void {
+    const p = this.pickPoint(clientX, clientY);
     if (!p) {
       this.hoverRing.visible = false;
       return;
@@ -261,6 +306,8 @@ export class BoardScene {
     el.removeEventListener("pointerdown", this.onPointerDown);
     el.removeEventListener("pointerup", this.onPointerUp);
     el.removeEventListener("pointermove", this.onPointerMove);
+    el.removeEventListener("pointercancel", this.onPointerCancel);
+    el.removeEventListener("pointerleave", this.onPointerLeave);
     window.removeEventListener("resize", this.onResize);
     this.renderer.dispose();
     el.remove();

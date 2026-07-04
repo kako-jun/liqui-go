@@ -104,12 +104,16 @@ export function commitPlacement(
   cooldown[indexOf(def, x, y)] = RULES.koCooldownTurns;
 
   // 5. 新しい state を組んで返す（スプレッドで元を保持・純粋）。
+  //    moveRights はネストしたオブジェクトなのでスプレッドだけだと元 state と
+  //    参照共有になる。ルール②（1.5手・#5）が moveRights を書き換えた瞬間に
+  //    過去局面まで遡って壊れる（純粋性・undo 破綻）ため、ここで明示的にコピーする。
   return {
     ok: true,
     state: {
       ...state,
       cells,
       cooldown,
+      moveRights: { ...state.moveRights },
       turnCount: state.turnCount + 1,
     },
     resolution,

@@ -26,7 +26,8 @@ scene.setLegalityProbe((x, y) => canPlaceAt(def, state, x, y));
 // ---- HUD（配線層で DOM 生成。game/render に UI を混ぜない） ----
 const hud = document.getElementById("hud");
 if (!hud) throw new Error("#hud が無い");
-hud.style.pointerEvents = "auto";
+// #hud 自体はクリックを盤に通す（pointer-events:none は index.html で指定）。
+// 操作するボタンだけ pointer-events:auto に戻してあるので、ここで auto にしない。
 hud.innerHTML = `
   <div id="hud-panel">
     <div class="hud-row"><span id="hud-turn"></span></div>
@@ -84,6 +85,9 @@ scene.onPointClick = (x, y) => {
     scene.setState(state);
     currentPlayer = currentPlayer === "black" ? "white" : "black"; // 手番反転（暫定）
     updateHud();
+    // 置いた点は occupied/cooldown になったので、マウスを動かさなくても
+    // ホバー色（緑→赤）を即反映する。
+    scene.refreshHover();
   } else {
     showReject(r.reason);
   }
