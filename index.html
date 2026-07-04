@@ -25,15 +25,46 @@
         font:
           12px/1.5 ui-monospace,
           monospace;
-        opacity: 0.7;
-        pointer-events: none;
         user-select: none;
+      }
+      #hud-panel {
+        background: rgba(10, 18, 28, 0.72);
+        border: 1px solid #24405c;
+        border-radius: 6px;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 140px;
+      }
+      #hud .hud-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        min-height: 16px;
+      }
+      #hud button {
+        font: inherit;
+        color: #cfe3ff;
+        background: #17293b;
+        border: 1px solid #2f5474;
+        border-radius: 4px;
+        padding: 3px 10px;
+        cursor: pointer;
+      }
+      #hud button.active {
+        background: #2f6fa0;
+        border-color: #4f96c8;
+        color: #eef6ff;
+      }
+      #hud-reject {
+        color: #ff9a90;
       }
     </style>
   </head>
   <body>
     <div id="app"></div>
-    <div id="hud">リキッ碁 — dev scaffold（盤面と石の値を確認中。液体地形は未実装）</div>
+    <div id="hud"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
