@@ -11,12 +11,14 @@ src/
 │   ├── coords.ts      座標 ↔ インデックス変換、ムーブ可能点（純粋関数）
 │   ├── stones.ts      足し算エンジン（核）: delta / resolveAdd / classify / applyPlacement
 │   ├── stones.test.ts エンジンの境界値テスト
+│   ├── rules.ts       合法手判定とターン確定（純粋）: canPlaceAt / placementRejection / legalPlacements / tickCooldowns / commitPlacement
+│   ├── rules.test.ts  合法手判定・cooldown 遷移・純粋性の境界値テスト
 │   └── state.ts       実行時状態 GameState（完全シリアライズ可能）
 └── render/          描画層。GameState を読んで描くだけ
-    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー
+    └── boardScene.ts  Three.js シーン構築・盤/格子/星・石マーカー・raycast 交点ピック（onPointClick / setLegalityProbe / ホバー標示）
 ```
 
-`main.ts` が両層を配線する（state を作って scene に渡す）。
+`main.ts` が両層を配線する（state を作り、scene に渡し、クリック→`commitPlacement`→再描画をつなぐ）。合法手判定は `game/rules.ts`、描画は `render` に閉じ、`render` は合法性を probe 関数注入で受け取るだけで判定ロジックを持たない。
 
 ## 設計規律（dev-doctrine 準拠）
 
