@@ -102,6 +102,35 @@ export function classify(before: CellValue, d: number): Resolution {
 }
 
 /**
+ * 同点同時着手（ルール①）の解決。空きセルに黒(+)・白(-)の両デルタを同時加算する。
+ * dBlack>0（+1 か +0.5）, dWhite<0（-1 か -0.5）を前提。足し算核: after = 0 + dBlack + dWhite。
+ *
+ * classify(before,d) は「単一デルタが既存セルに乗る」前提のため、黒ポア(0.5)＋白石(-1)
+ * を「0.5 の上に 1 石」と誤判定して throw する。同時着手は空きセルへの両デルタ同時加算
+ * という別経路なので、判定を混ぜず専用にここで解く。値域検証は resolveAdd に委ねる。
+ */
+export function classifySimultaneous(dBlack: number, dWhite: number): Resolution {
+  if (!(dBlack > 0 && dWhite < 0)) {
+    throw new RangeError(
+      `classifySimultaneous は dBlack>0 かつ dWhite<0 を前提とする（黒+ / 白-）。received dBlack=${dBlack}, dWhite=${dWhite}`,
+    );
+  }
+  // 足し算の核を経由して合法値域を検証（空き 0 に両デルタを同時加算）。
+  const after = resolveAdd(0, dBlack + dWhite);
+  const bothStone = Math.abs(dBlack) === 1 && Math.abs(dWhite) === 1;
+  const bothPour = Math.abs(dBlack) === 0.5 && Math.abs(dWhite) === 0.5;
+  let phenomenon: Phenomenon;
+  if (bothStone) {
+    phenomenon = "capture"; // 1石 vs 1石 → 相討ち（after 0）
+  } else if (bothPour) {
+    phenomenon = "cancel"; // 0.5 vs 0.5 → 相殺（after 0）
+  } else {
+    phenomenon = "reduce"; // 片方 stone・片方 pour → ±0.5 が残る
+  }
+  return { after, phenomenon };
+}
+
+/**
  * 盤面 cells のクローンに1手を適用する（純粋）。state は変更しない。
  * 合法手判定（コウ・連続配置禁止など）は呼び出し側の責務。ここは足し算だけ。
  */
