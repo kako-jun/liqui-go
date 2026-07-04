@@ -1,34 +1,51 @@
 // エントリ（配線層）。state と描画層と HUD を繋ぐだけ。
 // ゲームロジックは src/game、描画は src/render。ここは両者の配線と UI 生成のみ。
 //
-// ルール①同時プロット制＋ルール③ムーブ。#1 の暫定ホットシートを置換。
+// ルール①同時プロット制＋ルール②1.5手（星パックマン）＋ルール③ムーブ。
 // 先手後手なし。黒→白の順に「位置を伏せて」プロットし、白確定で両手を同時公開して
 // resolveSimultaneous（足し算の核）で解決する。
+// ルール②: 星・天元へ着地した手番は 1.5 手の権利を獲得（上限1.5・上書き・取られても消えない）。
+//   権利1.5を持つ手番は、そのラウンドで通常の1手＋追加ポア0.5（extra）を1つ打てる。
+//   フェーズ機械: black-main →(黒1.5なら) black-extra → white-main →(白1.5なら) white-extra → resolve。
 // ルール③ ムーブ: 自分の 0.5 をクリック→隣接8マスの移動先を選ぶ（0.5のみ・1石不可）。
-// 同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
-import { BOARD_SIZES } from "./game/boardDef";
+//   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
+import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
 import { createInitialState } from "./game/state";
+import type { MoveRights } from "./game/state";
 import { placementRejection, resolveSimultaneous, moveRejection } from "./game/rules";
 import type { PlaceKind, Phenomenon, Player } from "./game/stones";
-import type { PlotRejection, PlotInput, Plot, ResolveEvent } from "./game/rules";
+import type { PlotRejection, PlotInput, Plot, ExtraInput, ResolveEvent } from "./game/rules";
 import { BoardScene } from "./render/boardScene";
 
 const def = BOARD_SIZES["9"];
 let state = createInitialState("9"); // 空盤（再代入で局面を進める）
 
-// ラウンド状態（ルール①）。黒→白の順にプロットし、白が確定した瞬間に resolve。
-type Phase = "black-plot" | "white-plot";
-let phase: Phase = "black-plot";
+// ラウンド状態（ルール①②③）。黒 main →(黒extra)→ 白 main →(白extra)→ resolve。
+// extra は「1.5手の権利を持つ手番だけが打てる追加ポア0.5」の着地点（ルール②）。
+type Phase = "black-main" | "black-extra" | "white-main" | "white-extra";
+let phase: Phase = "black-main";
 let blackPlot: PlotInput = null;
 let whitePlot: PlotInput = null;
+let blackExtra: ExtraInput = null;
+let whiteExtra: ExtraInput = null;
 let currentKind: PlaceKind = "stone"; // 石/ポア。両者共通の入力補助（HUD トグル）。
 // ルール③ 現手番のムーブ元選択（自分の 0.5 をクリックして選び、次クリックで移動先）。
 let pendingMoveFrom: { x: number; y: number } | null = null;
 
-/** 現在プロット中の手番。 */
+/** 現在プロット中の手番（main/extra いずれも同じ手番）。 */
 function currentPlayer(): Player {
-  return phase === "black-plot" ? "black" : "white";
+  return phase === "black-main" || phase === "black-extra" ? "black" : "white";
+}
+
+/** いま追加ポア（extra）を選ぶフェーズか。 */
+function isExtraPhase(): boolean {
+  return phase === "black-extra" || phase === "white-extra";
+}
+
+/** その手番が 1.5 手の権利を持つ（extra を打てる）か。開始 state 基準。 */
+function hasMoveRight(player: Player): boolean {
+  return state.moveRights[player] === RULES.maxMoveRight;
 }
 
 const container = document.getElementById("app");
@@ -36,7 +53,8 @@ if (!container) throw new Error("#app が無い");
 
 const scene = new BoardScene(container, def);
 scene.setState(state);
-// 合法性 probe（緑/赤ホバー）。既定は place 判定。ムーブ元選択中は「そこからの合法着地か」に差し替える。
+// 合法性 probe（緑/赤ホバー）。既定は place 判定（main の空点着手・extra の追加ポア共通）。
+// ムーブ元選択中は「そこからの合法着地か」に差し替える。
 // 開始 state 基準（両者とも同じ空きを狙えるのは仕様＝同点衝突）。
 const placeProbe = (x: number, y: number): boolean => placementRejection(def, state, x, y) === null;
 scene.setLegalityProbe(placeProbe);
@@ -54,6 +72,7 @@ hud.innerHTML = `
       <button id="hud-pass" type="button">パス</button>
     </div>
     <div class="hud-row" id="hud-count"></div>
+    <div class="hud-row" id="hud-rights"></div>
     <div class="hud-row" id="hud-events"></div>
     <div class="hud-row" id="hud-reject"></div>
   </div>
@@ -61,21 +80,34 @@ hud.innerHTML = `
 
 const phaseEl = document.getElementById("hud-phase")!;
 const countEl = document.getElementById("hud-count")!;
+const rightsEl = document.getElementById("hud-rights")!;
 const eventsEl = document.getElementById("hud-events")!;
 const rejectEl = document.getElementById("hud-reject")!;
 const stoneBtn = document.getElementById("hud-stone") as HTMLButtonElement;
 const pourBtn = document.getElementById("hud-pour") as HTMLButtonElement;
 const passBtn = document.getElementById("hud-pass") as HTMLButtonElement;
 
+/** 1.5手の権利を表示用に整形（1.5 なら "1.5"、無ければ "—"）。 */
+function fmtRight(v: number): string {
+  return v === RULES.maxMoveRight ? "1.5" : "—";
+}
+
 function updateHud(): void {
-  let text = phase === "black-plot" ? "● 黒がプロット中" : "○ 白がプロット中";
+  let text: string;
+  if (phase === "black-main") text = "● 黒がプロット中";
+  else if (phase === "black-extra") text = "● 黒: 追加ポアを選べ（スキップ可）";
+  else if (phase === "white-main") text = "○ 白がプロット中";
+  else text = "○ 白: 追加ポアを選べ（スキップ可）";
   if (pendingMoveFrom) {
     text += `（移動元 (${pendingMoveFrom.x},${pendingMoveFrom.y}) → 移動先を選べ / もう一度押すと解除）`;
   }
   phaseEl.textContent = text;
   countEl.textContent = `手数: ${state.turnCount}`;
+  rightsEl.textContent = `権利 黒:${fmtRight(state.moveRights.black)} 白:${fmtRight(state.moveRights.white)}`;
   stoneBtn.classList.toggle("active", currentKind === "stone");
   pourBtn.classList.toggle("active", currentKind === "pour");
+  // extra フェーズでは石/ポアの別は無関係（追加ポアは常に0.5）。パスは「スキップ」表示に。
+  passBtn.textContent = isExtraPhase() ? "スキップ" : "パス";
 }
 
 const REJECT_TEXT: Record<PlotRejection, string> = {
@@ -85,6 +117,7 @@ const REJECT_TEXT: Record<PlotRejection, string> = {
   "not-your-half": "自分の0.5だけ動かせる",
   "not-adjacent": "隣接8マスのみ",
   "illegal-landing": "自分の1石には乗れない",
+  "no-move-right": "1.5手の権利がない",
 };
 
 let rejectTimer: number | undefined;
@@ -109,14 +142,22 @@ const PHENOMENON_TEXT: Record<Phenomenon, string> = {
   swap: "スワップ",
 };
 
-function showEvents(events: ResolveEvent[]): void {
+/**
+ * resolve 結果を HUD に要約する。現象イベントに加え、moveRights が前後で増えた手番があれば
+ * 「チャージ（1.5手獲得）」を併記する（ルール②の星取得通知は前後比較で検知）。
+ */
+function showEvents(events: ResolveEvent[], before: MoveRights, after: MoveRights): void {
+  const parts: string[] = [];
   if (events.length === 0) {
-    eventsEl.textContent = "解決: 両者パス";
-    return;
+    parts.push("両者パス");
+  } else {
+    parts.push(events.map((e) => `(${e.x},${e.y}) ${PHENOMENON_TEXT[e.phenomenon]}`).join(" / "));
   }
+  const charges: string[] = [];
+  if (after.black > before.black) charges.push("● チャージ（1.5手獲得）");
+  if (after.white > before.white) charges.push("○ チャージ（1.5手獲得）");
   eventsEl.textContent =
-    "解決: " +
-    events.map((e) => `(${e.x},${e.y}) ${PHENOMENON_TEXT[e.phenomenon]}`).join(" / ");
+    "解決: " + parts.join(" / ") + (charges.length ? " ／ " + charges.join(" / ") : "");
 }
 
 // ムーブ元の選択を解除して place モードへ戻す（probe / マーカー / HUD を戻す）。
@@ -128,38 +169,62 @@ function clearMoveSelection(): void {
   scene.refreshHover();
 }
 
-// 現 phase のプロットが確定した後に呼ぶ。黒→白、白→resolve。
+// 現フェーズの入力が確定した後に呼ぶ。フェーズ機械を1段進める。
+//   black-main →(黒1.5なら) black-extra → white-main →(白1.5なら) white-extra → resolve。
 function advanceTurn(): void {
-  if (phase === "black-plot") {
-    phase = "white-plot";
-    updateHud();
-    scene.refreshHover();
-  } else {
-    resolveRound();
+  switch (phase) {
+    case "black-main":
+      phase = hasMoveRight("black") ? "black-extra" : "white-main";
+      break;
+    case "black-extra":
+      phase = "white-main";
+      break;
+    case "white-main":
+      if (hasMoveRight("white")) {
+        phase = "white-extra";
+      } else {
+        resolveRound();
+        return;
+      }
+      break;
+    case "white-extra":
+      resolveRound();
+      return;
   }
+  updateHud();
+  scene.refreshHover();
 }
 
-// 現手番のプロットを確定する。
+// 現手番の main プロットを確定する。
 function setPlot(player: Player, plot: PlotInput): void {
   if (player === "black") blackPlot = plot;
   else whitePlot = plot;
 }
 
-// 現ラウンドを解決して次ラウンド（黒プロット）へ戻す。
+// 現手番の追加ポア（extra）を確定する（null=スキップ）。
+function setExtra(player: Player, extra: ExtraInput): void {
+  if (player === "black") blackExtra = extra;
+  else whiteExtra = extra;
+}
+
+// 現ラウンドを解決して次ラウンド（黒 main）へ戻す。
 function resolveRound(): void {
-  const r = resolveSimultaneous(def, state, blackPlot, whitePlot);
+  const before = { ...state.moveRights }; // 星取得（チャージ）検知用に前値を控える
+  const r = resolveSimultaneous(def, state, blackPlot, whitePlot, blackExtra, whiteExtra);
   if (r.ok) {
     state = r.state;
-    scene.setState(state); // ← この瞬間に両手が同時に盤へ乗る（伏せの解除）
-    showEvents(r.events);
+    scene.setState(state); // ← この瞬間に両手＋追加ポアが同時に盤へ乗る（伏せの解除）
+    showEvents(r.events, before, state.moveRights);
   } else {
     // 理論上起きない（プロット時に検証済み）が、来たら拒否表示。
     showReject(r.reason);
   }
-  // ラウンドをリセット（ムーブ選択も必ず解除・probe/マーカーを place に戻す）。
+  // ラウンドをリセット（プロット・追加ポア・ムーブ選択を必ず解除・probe/マーカーを place に戻す）。
   blackPlot = null;
   whitePlot = null;
-  phase = "black-plot";
+  blackExtra = null;
+  whiteExtra = null;
+  phase = "black-main";
   pendingMoveFrom = null;
   scene.setMoveSource(null);
   scene.setLegalityProbe(placeProbe);
@@ -177,20 +242,38 @@ pourBtn.addEventListener("click", () => {
   updateHud();
 });
 
-// ---- パス（現 phase の plot を null にして次へ。white でパスなら resolve） ----
+// ---- パス / スキップ ----
+// main フェーズ: 現手番の plot を null にして次へ。extra フェーズ: 追加ポアをスキップ（null）。
 passBtn.addEventListener("click", () => {
   // ムーブ元選択中でも、パスは選択を捨てて手番を進める。
   pendingMoveFrom = null;
   scene.setMoveSource(null);
   scene.setLegalityProbe(placeProbe);
-  setPlot(currentPlayer(), null);
+  if (isExtraPhase()) {
+    setExtra(currentPlayer(), null); // スキップ: 追加ポアを打たない
+  } else {
+    setPlot(currentPlayer(), null); // パス: 通常の手を打たない
+  }
   advanceTurn();
 });
 
-// ---- クリック（ルール①同時プロット＋ルール③ムーブ）。黒→白の順、白確定で resolve ----
+// ---- クリック（ルール①同時プロット＋②追加ポア＋③ムーブ）----
 scene.onPointClick = (x, y) => {
   const player = currentPlayer();
 
+  // extra フェーズ: 追加ポア0.5 の着地点を選ぶ（空点のみ・ムーブ元選択は無い）。
+  if (isExtraPhase()) {
+    const reason = placementRejection(def, state, x, y);
+    if (reason !== null) {
+      showReject(reason);
+      return;
+    }
+    setExtra(player, { x, y }); // 伏せる: resolve 時に main と同時公開。
+    advanceTurn();
+    return;
+  }
+
+  // 以下 main フェーズ（既存のルール①③入力）。
   if (pendingMoveFrom === null) {
     // 移動元未選択。自分の 0.5 なら移動元選択へ、空点なら place、それ以外は拒否。
     const myHalf = player === "black" ? 0.5 : -0.5;
