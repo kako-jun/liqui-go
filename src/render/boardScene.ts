@@ -74,7 +74,9 @@ export class BoardScene {
 
     const span = def.lines - 1;
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
-    this.camera.position.set(span * 0.55, span * 0.95, span * 1.15);
+    // x は盤中心（span/2）に合わせて左右対称に。y を上げ z を引いて盤全体を
+    // フレーム内へ（近い手前の辺が下で切れないようにする）。
+    this.camera.position.set(span / 2, span * 1.2, span * 1.55);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(span / 2, 0, span / 2);
@@ -244,7 +246,11 @@ export class BoardScene {
   private resize(): void {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
-    this.renderer.setSize(w, h, false);
+    // updateStyle=true（既定）: キャンバスに CSS サイズ w×h を付ける。
+    // false にすると drawing buffer サイズ（devicePixelRatio 倍）が CSS px として
+    // leak し、キャンバスがビューポートより大きく描かれて overflow:hidden で
+    // 左上だけ見える＝盤が右下に寄る。ここで CSS サイズを必ず一致させる。
+    this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }

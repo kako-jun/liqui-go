@@ -17,6 +17,13 @@
         height: 100vh;
         display: block;
       }
+      /* キャンバスは必ずコンテナ一杯に収める（drawing buffer サイズが CSS px として
+         leak して盤が右下に寄るのを防ぐ保険。正は boardScene の setSize(w,h)）。 */
+      #app canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
       #hud {
         position: fixed;
         left: 12px;
