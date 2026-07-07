@@ -49,11 +49,14 @@ const WATER_LIFT = 0.005;
 // 全体の不透明度（第一段は per-vertex alpha を使わず彩度ゲート＋一律 opacity で液感を出す）。
 const WATER_OPACITY = 0.5;
 
-// 石メッシュの半径（setState と共有）。石セルの水位をこの石頭の高さに合わせる。
-const STONE_RADIUS_FULL = 0.42; // |v|=1（固まった1石）
-const STONE_RADIUS_HALF = 0.3; // |v|=0.5（未固形の0.5石）
-// 石セルの水位を石頭(top)の何割にするか。1 未満で水面を石の冠より少し下げ、石を水面から出す。
-const WATER_STONE_FILL = 0.82;
+// 石メッシュの半径（setState が石の見た目に使う）。
+const STONE_RADIUS_FULL = 0.42; // |v|=1（固まった1石・top≈0.462）
+const STONE_RADIUS_HALF = 0.3; // |v|=0.5（未固形の0.5石・top≈0.33）
+// 石セルの水位は「石頭の割合」でなく石種ごとの絶対値で決める（ライブ調整するツマミ）。
+// 0.5石は背が低いので、割合(50%=0.165)だと水位が下がりすぎて石の脇に来ない。
+// 実寸の肩口に合わせ、水面が石の真横に来て冠が少し出る高さを直に指定する。
+const WATER_LEVEL_FULL = 0.4; // 1石の肩口（top≈0.462 の少し下＝冠が出る）
+const WATER_LEVEL_HALF = 0.28; // 0.5石の肩口（top≈0.33 の少し下・背が低いので高め）
 // ownership 色を presence（効きの総量）でゲートする閾。HeightField は presence を直接持たず
 // pressure(=total) を公開するので、単調な pressure に smoothstep を掛けてゲートする。
 // pressure がこの下限以下なら中立の濁り色、上限以上なら ownership 色を全掛けする。
@@ -365,7 +368,7 @@ export class BoardScene {
    * - 盤 [0,span]×[0,span]（span=lines-1）を各セル WATER_SUBDIV 分割した格子。頂点 (wx, y, wz) は
    *   board 単位（交点 (x,y) は盤ワールド (x, 上=Y, z=y) に対応するので wz が z 側＝盤の y 座標）。
    * - 交点ごとに水位 level[] と波振幅 ampF[] を作る:
-   *   ・石セル(cells[i]≠0): level=石頭*WATER_STONE_FILL（水面を石の高さに合わせ冠を出す）・amp=0（凪）。
+   *   ・石セル(cells[i]≠0): level=石種ごとの絶対値(WATER_LEVEL_FULL/HALF・実寸の肩口)・amp=0（凪）。
    *   ・空点(cells[i]=0): level=height*HEIGHT_SCALE（係争度で持ち上がる）・amp=height*WOBBLE_AMP。
    * - 各頂点の Y と波振幅は level/ampF を、色用の ownership/pressure は field を、囲む4交点の
    *   bilinear 補間でサンプルする。頂点色 = presence(pressure) でゲートした ownership 色。
@@ -424,7 +427,8 @@ export class BoardScene {
     for (let i = 0; i < n; i++) {
       const v = cells[i];
       if (v !== 0) {
-        level[i] = this.stoneTop(v) * WATER_STONE_FILL; // 水面を石頭より少し下に
+        // 石種ごとの絶対水位（割合でなく実寸の肩口）。0.5石も水が真横に来る高さ。
+        level[i] = Math.abs(v) === 1 ? WATER_LEVEL_FULL : WATER_LEVEL_HALF;
         ampF[i] = 0; // 石セルは凪
       } else {
         level[i] = field.height[i] * HEIGHT_SCALE; // 係争度で持ち上がる
@@ -475,16 +479,6 @@ export class BoardScene {
     // 基底位置で法線を張り直す（PBR ライティングで凹凸を陰影として読ませる）。
     // 波立ちの毎フレーム法線再計算まではしない（第一段・コスト回避）。
     geom.computeVertexNormals();
-  }
-
-  /**
-   * 石メッシュの頭（top）の Y。setState と同じ寸法から算出する。
-   * 石は半径 radius の球を scale.y=0.55 で平たくし position.y=radius*0.55 に置くので、
-   * top = position.y(radius*0.55) + 潰れた半径(radius*0.55) = radius*1.1。
-   */
-  private stoneTop(v: number): number {
-    const radius = Math.abs(v) === 1 ? STONE_RADIUS_FULL : STONE_RADIUS_HALF;
-    return radius * 1.1;
   }
 
   /**
