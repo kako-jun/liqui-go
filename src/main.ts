@@ -12,7 +12,7 @@
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
 import { computeTerritory } from "./game/territory";
-import { createInitialState, applyState } from "./game/state";
+import { createInitialState, applyState, paintCell, serialize, deserialize } from "./game/state";
 import type { MoveRights, GameState } from "./game/state";
 import { PRESETS } from "./game/presets";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
@@ -34,6 +34,10 @@ let whiteExtra: ExtraInput = null;
 let currentKind: PlaceKind = "stone"; // 石/ポア。両者共通の入力補助（HUD トグル）。
 // ルール③ 現手番のムーブ元選択（自分の 0.5 をクリックして選び、次クリックで移動先）。
 let pendingMoveFrom: { x: number; y: number } | null = null;
+// 局面エディタ（自由配置・Issue #17）。ON でフェーズ機械を止め、クリックがブラシ塗りになる。
+// OFF で loadState 経由でラウンド機械を初手へ戻し、編集結果の cells のままプレイ再開する。
+let editMode = false;
+let currentBrush = 1; // 選択中ブラシ値 {1,0.5,-1,-0.5,0}。編集クリックでこの値をセルに塗る。
 
 /** 現在プロット中の手番（main/extra いずれも同じ手番）。 */
 function currentPlayer(): Player {
@@ -94,6 +98,8 @@ renderState();
 // ムーブ元選択中は「そこからの合法着地か」に差し替える。
 // 開始 state 基準（両者とも同じ空きを狙えるのは仕様＝同点衝突）。
 const placeProbe = (x: number, y: number): boolean => placementRejection(def, state, x, y) === null;
+// 編集モード中はホバー probe を常に緑（自由配置なので占有・合法手を無視する・Issue #17）。
+const editProbe = (): boolean => true;
 scene.setLegalityProbe(placeProbe);
 
 // ---- HUD（配線層で DOM 生成。game/render に UI を混ぜない） ----
@@ -103,10 +109,22 @@ if (!hud) throw new Error("#hud が無い");
 hud.innerHTML = `
   <div id="hud-panel">
     <div class="hud-row"><span id="hud-phase"></span></div>
-    <div class="hud-row">
+    <div class="hud-row" id="hud-controls">
       <button id="hud-stone" type="button">石</button>
       <button id="hud-pour" type="button">ポア</button>
       <button id="hud-pass" type="button">パス</button>
+    </div>
+    <div class="hud-row" id="hud-brushes" hidden>
+      <button id="brush-b1" type="button">黒1</button>
+      <button id="brush-b05" type="button">黒0.5</button>
+      <button id="brush-w1" type="button">白1</button>
+      <button id="brush-w05" type="button">白0.5</button>
+      <button id="brush-erase" type="button">消す</button>
+    </div>
+    <div class="hud-row">
+      <button id="hud-edit" type="button">編集</button>
+      <button id="hud-copy" type="button">JSONコピー</button>
+      <button id="hud-load" type="button">JSON読込</button>
     </div>
     <div class="hud-row" id="hud-presets"></div>
     <div class="hud-row" id="hud-count"></div>
@@ -126,22 +144,52 @@ const rejectEl = document.getElementById("hud-reject")!;
 const stoneBtn = document.getElementById("hud-stone") as HTMLButtonElement;
 const pourBtn = document.getElementById("hud-pour") as HTMLButtonElement;
 const passBtn = document.getElementById("hud-pass") as HTMLButtonElement;
+// 局面エディタ（Issue #17）の DOM 参照。対局コントロール行とブラシ行は編集 ON/OFF で出し分ける。
+const editBtn = document.getElementById("hud-edit") as HTMLButtonElement;
+const copyBtn = document.getElementById("hud-copy") as HTMLButtonElement;
+const loadBtn = document.getElementById("hud-load") as HTMLButtonElement;
+const controlsRow = document.getElementById("hud-controls")!;
+const brushesRow = document.getElementById("hud-brushes")!;
+// ブラシ定義: 黒1(+1)/黒0.5(+0.5)/白1(-1)/白0.5(-0.5)/消す(0)。値は5値ちょうどなので float 等値比較で可。
+const brushDefs: { el: HTMLButtonElement; value: number }[] = [
+  { el: document.getElementById("brush-b1") as HTMLButtonElement, value: 1 },
+  { el: document.getElementById("brush-b05") as HTMLButtonElement, value: 0.5 },
+  { el: document.getElementById("brush-w1") as HTMLButtonElement, value: -1 },
+  { el: document.getElementById("brush-w05") as HTMLButtonElement, value: -0.5 },
+  { el: document.getElementById("brush-erase") as HTMLButtonElement, value: 0 },
+];
 
 /** 1.5手の権利を表示用に整形（1.5 なら "1.5"、無ければ "—"）。 */
 function fmtRight(v: number): string {
   return v === RULES.maxMoveRight ? "1.5" : "—";
 }
 
+/**
+ * 編集モードの UI 同期（Issue #17）。編集トグルの active・対局コントロール行/ブラシ行の
+ * 出し分け（hidden 属性・CSS の #hud .hud-row[hidden] で確実に非表示）・選択中ブラシの active。
+ */
+function syncEditUI(): void {
+  editBtn.classList.toggle("active", editMode);
+  controlsRow.hidden = editMode; // 対局コントロール（石/ポア/パス）は編集中は隠す
+  brushesRow.hidden = !editMode; // ブラシパレットは編集中だけ出す
+  for (const b of brushDefs) b.el.classList.toggle("active", b.value === currentBrush);
+}
+
 function updateHud(): void {
-  let text: string;
-  if (phase === "black-main") text = "● 黒がプロット中";
-  else if (phase === "black-extra") text = "● 黒: 追加ポアを選べ（スキップ可）";
-  else if (phase === "white-main") text = "○ 白がプロット中";
-  else text = "○ 白: 追加ポアを選べ（スキップ可）";
-  if (pendingMoveFrom) {
-    text += `（移動元 (${pendingMoveFrom.x},${pendingMoveFrom.y}) → 移動先を選べ / もう一度押すと解除）`;
+  if (editMode) {
+    // 編集中はフェーズ機械を止めているので、フェーズ表示を編集モードの説明に差し替える。
+    phaseEl.textContent = "編集モード: ブラシで盤面を直接塗る（OFFでプレイ再開）";
+  } else {
+    let text: string;
+    if (phase === "black-main") text = "● 黒がプロット中";
+    else if (phase === "black-extra") text = "● 黒: 追加ポアを選べ（スキップ可）";
+    else if (phase === "white-main") text = "○ 白がプロット中";
+    else text = "○ 白: 追加ポアを選べ（スキップ可）";
+    if (pendingMoveFrom) {
+      text += `（移動元 (${pendingMoveFrom.x},${pendingMoveFrom.y}) → 移動先を選べ / もう一度押すと解除）`;
+    }
+    phaseEl.textContent = text;
   }
-  phaseEl.textContent = text;
   countEl.textContent = `手数: ${state.turnCount}`;
   // 取得済みの地の体積（m³）＝スコア。1マス=1m³（design.md「デジタルならではの解決」）。
   // renderState で算出済みの currentTerritory を数え直すだけ（territory 再計算はしない・N4）。
@@ -152,6 +200,7 @@ function updateHud(): void {
   pourBtn.classList.toggle("active", currentKind === "pour");
   // extra フェーズでは石/ポアの別は無関係（追加ポアは常に0.5）。パスは「スキップ」表示に。
   passBtn.textContent = isExtraPhase() ? "スキップ" : "パス";
+  syncEditUI();
 }
 
 const REJECT_TEXT: Record<PlotRejection, string> = {
@@ -165,12 +214,16 @@ const REJECT_TEXT: Record<PlotRejection, string> = {
 };
 
 let rejectTimer: number | undefined;
-function showReject(reason: PlotRejection): void {
-  rejectEl.textContent = REJECT_TEXT[reason];
+/** 任意の拒否メッセージを一定時間だけ赤字表示する（JSON 不正・クリップボード失敗などの自由文用）。 */
+function showRejectText(text: string): void {
+  rejectEl.textContent = text;
   if (rejectTimer !== undefined) clearTimeout(rejectTimer);
   rejectTimer = window.setTimeout(() => {
     rejectEl.textContent = "";
   }, 1200);
+}
+function showReject(reason: PlotRejection): void {
+  showRejectText(REJECT_TEXT[reason]);
 }
 
 // 現象名の日本語ラベル（HUD の resolve 要約用）。Record 網羅で追加漏れを型で防ぐ。
@@ -301,6 +354,63 @@ passBtn.addEventListener("click", () => {
   advanceTurn();
 });
 
+// ---- 局面エディタ（自由配置・Issue #17）----
+// 編集トグル: ON でフェーズ機械を止めブラシ塗りへ。OFF で loadState 経由でラウンド機械を
+// 初手（黒 main）へ戻し、編集結果の cells のままプレイ再開する。
+editBtn.addEventListener("click", () => {
+  if (!editMode) {
+    editMode = true;
+    // 対局途中のムーブ元選択が残っていても捨てる（編集は自由配置でムーブ元を持たない）。
+    pendingMoveFrom = null;
+    scene.setMoveSource(null);
+    scene.setLegalityProbe(editProbe); // 編集中はホバー常に緑（占有・合法手を無視）
+    rejectEl.textContent = "";
+    eventsEl.textContent = "";
+    updateHud(); // フェーズ表示を編集モードへ・コントロール/ブラシ行の出し分け・ブラシ active
+    scene.refreshHover();
+  } else {
+    editMode = false;
+    // 編集結果を現局面としてラウンド機械を初手へ戻す（既存 loadState と同手順・cells は保持）。
+    loadState(state); // updateHud/renderState/refreshHover/probe(placeProbe) をまとめて行う
+  }
+});
+
+// ブラシ選択: 選択中ブラシ値を currentBrush に据え、active を付け替える。
+for (const b of brushDefs) {
+  b.el.addEventListener("click", () => {
+    currentBrush = b.value;
+    updateHud();
+  });
+}
+
+// 局面をJSONでコピー: serialize(state) をクリップボードへ。失敗は reject 表示。
+copyBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(serialize(state)).then(
+    () => {
+      eventsEl.textContent = "局面JSONをコピーしました";
+    },
+    () => {
+      showRejectText("クリップボードにコピーできません");
+    },
+  );
+});
+
+// JSONを貼って読込: prompt で貼らせ deserialize→loadState。不正は try/catch で reject 表示。
+loadBtn.addEventListener("click", () => {
+  const json = window.prompt("局面JSONを貼り付けてください");
+  if (json === null) return; // キャンセル
+  const trimmed = json.trim();
+  if (trimmed === "") return;
+  let next: GameState;
+  try {
+    next = deserialize(trimmed); // 不正（JSON構文・スキーマ・セル値）は throw で弾かれる
+  } catch {
+    showRejectText("JSONが不正です");
+    return;
+  }
+  loadState(next); // 復元した局面を現局面に（編集中なら probe は緑を維持）
+});
+
 // ---- 局面プリセット（定番局面のワンクリック読み込み）----
 // canned GameState を applyState でロードし、ラウンド機械を初手（黒 main）へ戻す。
 // resolveRound のリセット手順と同じ（プロット・追加ポア・ムーブ選択を全解除・probe/マーカーを
@@ -315,7 +425,8 @@ function loadState(next: GameState): void {
   phase = "black-main";
   pendingMoveFrom = null;
   scene.setMoveSource(null);
-  scene.setLegalityProbe(placeProbe);
+  // 編集モード中に読み込まれた（プリセット/JSON/空盤）なら probe は緑固定を維持する。
+  scene.setLegalityProbe(editMode ? editProbe : placeProbe);
   rejectEl.textContent = "";
   eventsEl.textContent = "";
   renderState(); // 柵＋水を描き直す（currentTerritory も更新）
@@ -340,6 +451,15 @@ presetsEl.appendChild(emptyBtn);
 
 // ---- クリック（ルール①同時プロット＋②追加ポア＋③ムーブ）----
 scene.onPointClick = (x, y) => {
+  // 編集モード（自由配置・Issue #17）: フェーズ機械を通さず、ブラシ値で直接セルを塗る。
+  // 占有・cooldown・合法手判定は無視（turnCount/cooldown/moveRights は paintCell が据え置く）。
+  if (editMode) {
+    state = paintCell(state, indexOf(def, x, y), currentBrush);
+    renderState(); // 柵＋水＋標高をライブ再描画（囲い切れば凪の池・薄い囲みは高く揺れる）
+    updateHud(); // スコア（m³）表示を更新
+    return;
+  }
+
   const player = currentPlayer();
 
   // extra フェーズ: 追加ポア0.5 の着地点を選ぶ（空点のみ・ムーブ元選択は無い）。
