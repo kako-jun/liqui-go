@@ -27,6 +27,41 @@ src/
 
 各交点で盤上の全石からの指数減衰寄与 `w = exp(-dist / LAMBDA)` を黒白別に積んで**影響場（influence field）**を作り、そこから 3 つの派生量を出す：`dominance = |pos-neg|/total`（片色支配=1 / 拮抗=0）、`presence = 1 - exp(-total / T0)`（効きの総量。石から遠い点=0）、その積 `settled = dominance × presence`（確定度）。**`height = 1 - settled`**（確定度の裏返し＝係争度・[0,1]）、`ownership = (pos-neg)/total`（[-1,1]・水の着色用）、`pressure = total`（デバッグ／強度用）を `HeightField` として返す。`total=0`（石が届かない点）をガードして 9/13/19 路のどれでも NaN/Infinity を出さない。`LAMBDA=2.5`（減衰長・交点間隔=1 単位）・`T0=1.0`（presence 基準）はレンダリング寄りのチューニング定数なので `RULES` でなく heightmap.ts 内に置く。
 
+## #6 に向けたレンダリング接続方針
+
+`computeHeightField`（#5）の出力 `HeightField = { lines, ownership[-1,1], height[0,1], pressure }` を、液体地形レンダリング（#6）で render 層がどう受け取り Three.js に落とすかの設計メモ。**方針の先行記述であってコードはまだ書かない。** 以下は 4 論点それぞれの推奨案と、短く添える候補。既存事実に接地する：`render/boardScene.ts` の `BoardScene` は既に `setState(state)` で盤面を受け取って `stoneGroup` を張り替え、`start()` が `requestAnimationFrame` ループ（`controls.update()`→`renderer.render()`→`rAF`）を保持している。盤は XZ 平面に敷かれ Y が上（石は `position.set(x, h, y)`）。
+
+### 1. 再計算の粒度 — 推奨: 毎手 full recompute
+
+`computeHeightField` は純粋・軽量（コスト＝点数 × 石数。19 路でも 361 点 ×〜50 石程度で瑣末）なので、**着手のたびに全点を計算し直す**。差分・キャッシュは持たない。配線層 `main.ts` が state 変化時（`resolveSimultaneous`→`setState` の直後、既に state→render を配線している延長）に `computeHeightField(def, state.cells)` を呼び、`BoardScene` の新メソッド（例 `setHeightField(field: HeightField)`）へ渡す。game/render の一方向依存は保たれる（render は HeightField という**プレーンな数値配列**を受け取るだけで、game を import しない）。
+候補: 差分再計算（触れたセル周辺だけ更新）。この規模では最適化の価値がなく、純粋関数の単純さを捨てるので**採らない**。
+
+### 2. ジオメトリ写像（頂点 Y 変位）— 推奨: 交点間を細分した水面 Plane
+
+水面は盤を覆う `PlaneGeometry`（既存 board plane と同じ XZ 座標系に敷く）。各頂点の高さを `y = height[p] * HEIGHT_SCALE`（`HEIGHT_SCALE`〜0.6〜1.0 board 単位）で変位する。settled（`height≈0`）＝海抜0の凪の池、係争（`height≈1`）＝盛り上がる、が地形として立ち上がる。**各セルを k×k のサブ quad に細分し**、格子頂点だけでなくセル内部の点も `height`/`ownership` を交点値の bilinear 補間でサンプルして滑らかな液面にする。変位後に `geometry.computeVertexNormals()` で法線を張り直し、`MeshStandardMaterial` のライティングを効かせる（凹凸が陰影で読める）。
+候補: 交点そのものを頂点にする最小構成（`lines × lines`）。実装は容易だが 9 路では面が角ばる。第一段の出発点にはできる（下の増分参照）。
+
+### 3. マテリアル／色写像（ownership → 色）— 推奨: 第一段は vertexColors 付き MeshStandardMaterial
+
+`ownership[-1,1]` を白流体 ↔ 黒流体の色 lerp に写像し、`ownership≈0`（係争）は中立の濁り色にする。**まず頂点ごとに `ownership` から頂点カラーを与えた `MeshStandardMaterial`（`vertexColors: true`・`transparent`・低 `roughness`）で早く液体感を出す**。既存の石も `MeshStandardMaterial` なので画作りが揃う。`pressure` は当面デバッグ表示（効きの強い所を可視化）に使い、色には必須ではない。
+候補: `ShaderMaterial` で流れ・コースティクスまで作り込む（第二段。「出してから磨く」）。
+
+### 4. 波立ち（時間アニメ）— 推奨: 時刻は render 側だけが持ち、基底 height に加算する
+
+game 層は時刻・乱数・副作用を持てない（純粋・`Date`/`Math.random` 禁止）。よって **基底 `HeightField` は毎手 game から来る静的値**とし、**波のアニメーションは render 層の `requestAnimationFrame` 側だけで足す**。式の骨子：
+
+```
+displacedY = height[p] * HEIGHT_SCALE + wobbleAmp(height[p]) * sin(t * FREQ + phase(x, y))
+```
+
+`wobbleAmp` は `height` に比例（settled=揺れ 0・係争=最大）＝「決着した池は凪ぎ、係争地だけ波立つ」。`phase` を頂点座標で散らして有機的な波紋にする。時刻 `t` は render の経過時間だが、**現状の `start()` ループは時刻を持たない**ので、`BoardScene` に `THREE.Clock` を持たせ、既存ループ内で `clock.getElapsedTime()` を読んで更新点を1つ挿す。推奨は **`ShaderMaterial` に `uTime` uniform を渡し頂点シェーダで波立ちを計算する**（GPU・最安、頂点更新を JS で回さない）。
+候補: CPU で毎フレーム頂点属性を更新（この頂点数なら現実的。`position` 属性書き換え＋`needsUpdate`＋`computeVertexNormals`）。`MeshStandardMaterial` のまま `onBeforeCompile` で頂点変位を注入して PBR ライティングを保ったまま GPU 波立ちにする折衷もあり得る。
+
+### 増分の切り分け（第一段=最小で出す → 第二段=磨く）
+
+- **第一段（最小で出す）**: 交点を細分した水面 Plane ＋ `vertexColors` 付き `MeshStandardMaterial`（ownership 着色）＋ CPU もしくは簡易な波立ち。まず「係争地が盛り上がり色が付いて揺れる」ところまでを実ブラウザで出す。
+- **第二段（磨く）**: `ShaderMaterial` に移行し、`uTime` 波立ち・半透明・流れ・コースティクス・屈折までシェーダで作り込む。基底 `HeightField` の受け渡し口（`setHeightField`）と毎手 full recompute の配線は第一段のまま流用できる。 (#6)
+
 ## 設計規律（dev-doctrine 準拠）
 
 1. **定義データと実行時状態の分離** — 不変の盤仕様・ルール定数は `boardDef.ts`。対局中に変わる値は `state.ts` の `GameState` だけ。両者を混ぜない。
