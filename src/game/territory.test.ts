@@ -82,10 +82,48 @@ describe("computeTerritory — 両色に接する領域は中立（乾く）", (
   });
 });
 
+describe("computeTerritory — instability（囲う柵の弱さ＝0.5石の割合）", () => {
+  it("1石だけで囲った地は instability 0（硬い柵＝確定＝安定）", () => {
+    const cells = emptyCells();
+    set(cells, "9", 1, 2, 1);
+    set(cells, "9", 3, 2, 1);
+    set(cells, "9", 2, 1, 1);
+    set(cells, "9", 2, 3, 1);
+    const { territory, instability } = computeTerritory(D9, cells);
+    expect(territory[indexOf(D9, 2, 2)]).toBe(1);
+    expect(instability[indexOf(D9, 2, 2)]).toBe(0);
+    // 非territory・石セルは 0。
+    expect(instability[indexOf(D9, 1, 2)]).toBe(0);
+    expect(instability[indexOf(D9, 0, 0)]).toBe(0);
+  });
+
+  it("0.5石だけで囲った同形は instability 1（柔らかい柵＝不安定）", () => {
+    const cells = emptyCells();
+    set(cells, "9", 1, 2, 0.5);
+    set(cells, "9", 3, 2, 0.5);
+    set(cells, "9", 2, 1, 0.5);
+    set(cells, "9", 2, 3, 0.5);
+    const { territory, instability } = computeTerritory(D9, cells);
+    expect(territory[indexOf(D9, 2, 2)]).toBe(1);
+    expect(instability[indexOf(D9, 2, 2)]).toBe(1);
+  });
+
+  it("半々（1石2つ・0.5石2つ）で囲った地は instability 0.5", () => {
+    const cells = emptyCells();
+    set(cells, "9", 1, 2, 1); // 1石
+    set(cells, "9", 3, 2, 1); // 1石
+    set(cells, "9", 2, 1, 0.5); // 0.5石
+    set(cells, "9", 2, 3, 0.5); // 0.5石
+    const { territory, instability } = computeTerritory(D9, cells);
+    expect(territory[indexOf(D9, 2, 2)]).toBe(1);
+    expect(instability[indexOf(D9, 2, 2)]).toBeCloseTo(0.5, 10);
+  });
+});
+
 describe("computeTerritory — 値域・NaN無し・純粋性（3盤サイズ）", () => {
   const ids: BoardSizeId[] = ["9", "13", "19"];
   for (const id of ids) {
-    it(`${id}路: territory は {−1,0,1} のみ・NaN無し・長さ一致・入力不変・決定論`, () => {
+    it(`${id}路: territory{−1,0,1}・instability[0,1]・NaN無し・長さ一致・入力不変・決定論`, () => {
       const def = BOARD_SIZES[id];
       const cells = emptyCells(id);
       // 5値を散らした任意局面（±1・±0.5・0）。
@@ -96,18 +134,28 @@ describe("computeTerritory — 値域・NaN無し・純粋性（3盤サイズ）
       set(cells, id, 4, 4, 1);
       const clone = [...cells];
 
-      const { territory } = computeTerritory(def, cells);
+      const { territory, instability } = computeTerritory(def, cells);
 
       expect(territory.length).toBe(pointCount(def));
+      expect(instability.length).toBe(pointCount(def));
       for (const v of territory) {
         expect(Number.isNaN(v)).toBe(false);
         expect([-1, 0, 1]).toContain(v);
       }
+      for (let i = 0; i < instability.length; i++) {
+        const u = instability[i];
+        expect(Number.isNaN(u)).toBe(false);
+        expect(u).toBeGreaterThanOrEqual(0);
+        expect(u).toBeLessThanOrEqual(1);
+        // 非territoryセルの instability は必ず 0。
+        if (territory[i] === 0) expect(u).toBe(0);
+      }
       // 非破壊。
       expect(cells).toEqual(clone);
       // 決定論（同入力→同出力）。
-      const again = computeTerritory(def, cells).territory;
-      expect(again).toEqual(territory);
+      const again = computeTerritory(def, cells);
+      expect(again.territory).toEqual(territory);
+      expect(again.instability).toEqual(instability);
     });
   }
 });

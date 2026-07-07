@@ -13,7 +13,8 @@ const COLORS = {
   board: 0x123047,
   grid: 0x3f6f96,
   star: 0x6fb0e0,
-  black: 0x101820,
+  // 黒チームの柵色。暗い盤(0x123047)に沈まないよう視認できる濃紺グレーへ上げる（白柵とは十分別色）。
+  black: 0x2f4a63,
   white: 0xeef4fb,
   legal: 0x4fe08a, // ホバー標示（置ける）＝緑
   illegal: 0xe0544f, // ホバー標示（置けない）＝赤
@@ -21,7 +22,8 @@ const COLORS = {
   // 柵（石＝境界線）の2色。黒石＝暗い柵色・白石＝明るい柵色（丸い碁石は描かない）。
   // black/white を柵の柱・壁の両方に流用する。
   // 取得済みの地（水）の2色。黒（+）の地＝暗い水色／白（−）の地＝明るい水色。
-  waterBlack: 0x0e2c44, // 黒（+）が囲い切った地の流体色
+  // 黒水も盤に沈まないよう見える青へ上げる（白水とは十分別色）。
+  waterBlack: 0x1c5f8c, // 黒（+）が囲い切った地の流体色
   waterWhite: 0xd6eeff, // 白（−）が囲い切った地の流体色
 };
 
@@ -57,9 +59,18 @@ const FENCE_WOBBLE_PHASE_Z = 2.3;
 // ---- 水（取得済みの地）レンダリングの定数 ----
 // 一色の柵で囲い切った空点＝その色の水を、海抜0付近の凪の池として平たいタイルで溜める。
 // 中立(0)・石セルは水なし（乾く）。この段では標高・流れは付けない（次段）。
-const WATER_Y = 0.03; // 水面の高さ（board 単位）。板上面(0)・格子線(0.01)の直上、柵(高さ0.5)より十分低い。
+const WATER_Y = 0.03; // 水面の基底高さ（board 単位）。板上面(0)・格子線(0.01)の直上、確定地＝海抜0の凪。
 const WATER_TILE_HALF = 0.5; // 水タイルの半辺。交点を中心にセル境界まで＝隣接同色が連続して一つの池に見える。
 const WATER_OPACITY = 0.5; // 水面の不透明度（半透明・下の格子が薄く透ける）。
+// 不安定な地は高く盛り上がる（design.md「薄い囲み=不安定=高い/今にも流れ出す」）。
+// instability∈[0,1] を持ち上げ量へ写す。柵の高さ(0.5)を超えないよう RISE+WOBBLE_AMP < 0.5 に収める。
+const WATER_RISE = 0.35; // instability=1 の地の追加標高。基底 WATER_Y からの持ち上げ。
+// 液体感の揺らぎ。時刻は render の clock、位相は頂点座標から決定的に（Math.random/Date 不使用）。
+// 振幅は instability に比例＝確定地(0)は凪で動かず、不安定な地ほど強く揺れる。
+const WATER_WOBBLE_FREQ = 1.4; // 揺らぎの角速度（rad/s 相当）。
+const WATER_WOBBLE_AMP = 0.05; // instability=1 での最大振幅（凪 instability0 は 0）。
+const WATER_WOBBLE_PHASE_X = 1.3;
+const WATER_WOBBLE_PHASE_Z = 2.1;
 
 export class BoardScene {
   private readonly renderer: THREE.WebGLRenderer;
@@ -69,6 +80,14 @@ export class BoardScene {
   private readonly stoneGroup = new THREE.Group();
   // 取得済みの地（水）の専用 Group。setTerritory で毎手 clear→描き直す（geometry/material dispose）。
   private readonly waterGroup = new THREE.Group();
+  // 水面の揺らぎ用の頂点別データ（setTerritory で作り直す）。start() の RAF で Y を毎フレーム更新する。
+  // baseY=不安定さで持ち上げた静止 Y、amp=揺らぎ振幅(∝instability・凪=0)、phase=頂点座標由来の決定的位相。
+  private waterAnim: {
+    posAttr: THREE.BufferAttribute;
+    baseY: Float32Array;
+    amp: Float32Array;
+    phase: Float32Array;
+  }[] = [];
   private readonly def: BoardSizeDef;
   private running = false;
   private readonly onResize = () => this.resize();
@@ -370,31 +389,49 @@ export class BoardScene {
   }
 
   /**
-   * 取得済みの地（territory）を水として溜める。territory[i] は computeTerritory の出力:
-   * +1=黒の地 / −1=白の地 / 0=中立（乾く）・石セル。±1 の空点だけに半透明の平たい水面タイルを
-   * 海抜0付近（WATER_Y）で置く。隣接する同色タイルはセル境界で連続して一つの池に見える。
-   * 黒/白ごとに1メッシュへマージ（描画コスト・continuity）。毎手 clear→描き直す（リーク防止）。
+   * 取得済みの地（territory）を水として溜める。territory[i]/instability[i] は computeTerritory の出力:
+   * territory=+1黒の地 / −1白の地 / 0中立（乾く）・石セル。±1 の空点だけに半透明の平たい水面タイルを置く。
+   * 基底 Y は instability で持ち上げる（確定地=海抜0の凪／不安定=高く今にも流れ出す）。隣接する同色タイルは
+   * セル境界で連続して一つの池に見える。黒/白ごとに1メッシュへマージ（描画コスト・continuity）。
+   * 揺らぎは start() の RAF で足す（instability に比例・凪は動かさない）。毎手 clear→描き直す（リーク防止）。
    */
-  setTerritory(territory: number[]): void {
+  setTerritory(territory: number[], instability: number[]): void {
     this.clearWater();
-    this.addWaterMesh(territory, 1); // 黒（+）の地＝暗い水色
-    this.addWaterMesh(territory, -1); // 白（−）の地＝明るい水色
+    this.addWaterMesh(territory, instability, 1); // 黒（+）の地＝暗い水色
+    this.addWaterMesh(territory, instability, -1); // 白（−）の地＝明るい水色
   }
 
   /** territory の sign(+1黒/−1白) のセルを1枚のマージ水面メッシュにして waterGroup へ足す。 */
-  private addWaterMesh(territory: number[], sign: number): void {
+  private addWaterMesh(territory: number[], instability: number[], sign: number): void {
     const positions: number[] = [];
     const indices: number[] = [];
+    const baseYs: number[] = [];
+    const amps: number[] = [];
+    const phases: number[] = [];
     let quads = 0;
     for (let i = 0; i < territory.length; i++) {
       if (territory[i] !== sign) continue;
       const { x, y } = fromIndex(this.def, i);
+      const inst = instability[i];
+      const baseY = WATER_Y + inst * WATER_RISE; // 不安定なほど高い（凪 inst0 は海抜0付近）
+      const amp = WATER_WOBBLE_AMP * inst; // 揺らぎは instability に比例（確定地は動かない）
       const x0 = x - WATER_TILE_HALF;
       const x1 = x + WATER_TILE_HALF;
       const z0 = y - WATER_TILE_HALF;
       const z1 = y + WATER_TILE_HALF;
-      // 交点 (x,y) を中心に ±half の水平タイル（Y=WATER_Y）。4頂点 → 2三角形。
-      positions.push(x0, WATER_Y, z0, x1, WATER_Y, z0, x1, WATER_Y, z1, x0, WATER_Y, z1);
+      // 交点 (x,y) を中心に ±half の水平タイル（Y=baseY）。4頂点 → 2三角形。角の順は (x0,z0)(x1,z0)(x1,z1)(x0,z1)。
+      const corners: ReadonlyArray<readonly [number, number]> = [
+        [x0, z0],
+        [x1, z0],
+        [x1, z1],
+        [x0, z1],
+      ];
+      for (const [cx, cz] of corners) {
+        positions.push(cx, baseY, cz);
+        baseYs.push(baseY);
+        amps.push(amp);
+        phases.push(cx * WATER_WOBBLE_PHASE_X + cz * WATER_WOBBLE_PHASE_Z); // 座標から決定的
+      }
       const b = quads * 4;
       // 巻き順は法線が +Y（上）を向くように（XZ 平面・Y 上）。
       indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
@@ -415,6 +452,33 @@ export class BoardScene {
       side: THREE.DoubleSide,
     });
     this.waterGroup.add(new THREE.Mesh(geom, mat));
+    // 揺らぎ用の頂点データを登録（RAF で Y を更新する）。
+    const posAttr = geom.getAttribute("position") as THREE.BufferAttribute;
+    this.waterAnim.push({
+      posAttr,
+      baseY: new Float32Array(baseYs),
+      amp: new Float32Array(amps),
+      phase: new Float32Array(phases),
+    });
+  }
+
+  /**
+   * 水面の揺らぎ。時刻 t を read して各頂点 Y を baseY + amp*sin(t*FREQ + phase) に更新する。
+   * amp=0（確定地＝凪）の頂点は動かさない。game は時刻を持てないので揺らぎは render のここだけで足す。
+   */
+  private animateWater(): void {
+    if (this.waterAnim.length === 0) return;
+    const t = this.clock.getElapsedTime();
+    for (const w of this.waterAnim) {
+      const positions = w.posAttr.array as Float32Array;
+      let moved = false;
+      for (let vi = 0; vi < w.baseY.length; vi++) {
+        if (w.amp[vi] === 0) continue; // 凪は静止（無駄な書き込みを避ける）
+        positions[vi * 3 + 1] = w.baseY[vi] + w.amp[vi] * Math.sin(t * WATER_WOBBLE_FREQ + w.phase[vi]);
+        moved = true;
+      }
+      if (moved) w.posAttr.needsUpdate = true;
+    }
   }
 
   /** waterGroup の子（水面メッシュ）のジオメトリ/マテリアルを解放してから空にする（毎手のリーク防止）。 */
@@ -428,6 +492,7 @@ export class BoardScene {
       }
     }
     this.waterGroup.clear();
+    this.waterAnim = [];
   }
 
   /** 柵の柱/壁用マテリアル。1石＝不透明の硬い柵／0.5石が絡む柵＝半透明で揺らぐ壊れやすい柵。 */
@@ -547,6 +612,7 @@ export class BoardScene {
       if (!this.running) return;
       this.controls.update();
       this.animateFences(); // 0.5柵の揺らぎを毎フレーム更新（時刻は render 側のみ）
+      this.animateWater(); // 不安定な地の水面の揺らぎを毎フレーム更新
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };

@@ -18,7 +18,7 @@ const DIRS: ReadonlyArray<readonly [number, number]> = [
 ];
 
 /**
- * 盤面 cells から取得済みの地を算出する（純粋・非破壊・決定論）。
+ * 盤面 cells から取得済みの地と、その地の不安定さを算出する（純粋・非破壊・決定論）。
  *
  * territory[i]:
  * - 石セル（cells[i]≠0）: 0（柵の上に水は乗らない）。
@@ -26,21 +26,32 @@ const DIRS: ReadonlyArray<readonly [number, number]> = [
  *   ・全て黒（+）→ +1（黒の地）／全て白（−）→ −1（白の地）
  *   ・両色に接する、または石に一つも接しない（盤端だけに面する・空盤含む）→ 0（中立＝乾く）
  *
+ * instability[i] ∈ [0,1]:
+ * - 取得済みの地（territory≠0）: その領域を囲う石のうち 0.5 石（|v|=0.5＝柔らかい柵）が占める割合。
+ *   全部1石（硬い柵）→ 0（確定＝安定＝海抜0の凪の池）。0.5石が混ざるほど→1（今にも流れ出す高い地）。
+ *   同じ石が複数の空点から接しても石は1個として数える（領域に隣接する“石の集合”に対する割合）。
+ * - 非territory・石セル: 0。
+ *
  * 石の値は絶対値でなく符号だけを見る（1石も0.5石も同色の壁として囲いに寄与する）。
  */
-export function computeTerritory(def: BoardSizeDef, cells: number[]): { territory: number[] } {
+export function computeTerritory(
+  def: BoardSizeDef,
+  cells: number[],
+): { territory: number[]; instability: number[] } {
   const n = pointCount(def);
   const territory = new Array<number>(n).fill(0);
+  const instability = new Array<number>(n).fill(0);
   const visited = new Array<boolean>(n).fill(false);
 
   for (let start = 0; start < n; start++) {
     // 石セルと訪問済みは飛ばす。空点だけが領域の起点になる。
     if (visited[start] || cells[start] !== 0) continue;
 
-    // 空領域を集めつつ、接する石の色を集計する（DFS。順序に依存しない）。
+    // 空領域を集めつつ、接する石の色と「囲う石の集合」を集計する（DFS。順序に依存しない）。
     const region: number[] = [];
     let touchesBlack = false;
     let touchesWhite = false;
+    const wallStones = new Set<number>(); // 領域に直交隣接する石の index（重複は Set で1個に）
     const stack: number[] = [start];
     visited[start] = true;
 
@@ -60,10 +71,10 @@ export function computeTerritory(def: BoardSizeDef, cells: number[]): { territor
             visited[ni] = true;
             stack.push(ni);
           }
-        } else if (nv > 0) {
-          touchesBlack = true; // 黒（+1 / +0.5）の柵に接する
         } else {
-          touchesWhite = true; // 白（−1 / −0.5）の柵に接する
+          wallStones.add(ni); // 領域を囲う石として記録（不安定さの母数）
+          if (nv > 0) touchesBlack = true; // 黒（+1 / +0.5）の柵に接する
+          else touchesWhite = true; // 白（−1 / −0.5）の柵に接する
         }
       }
     }
@@ -73,9 +84,18 @@ export function computeTerritory(def: BoardSizeDef, cells: number[]): { territor
     if (touchesBlack && !touchesWhite) owner = 1;
     else if (touchesWhite && !touchesBlack) owner = -1;
     if (owner !== 0) {
-      for (const idx of region) territory[idx] = owner;
+      // 囲う石のうち 0.5 石が占める割合＝不安定さ（領域単位で1値・全セルに配る）。
+      let half = 0;
+      for (const si of wallStones) {
+        if (Math.abs(cells[si]) === 0.5) half++;
+      }
+      const inst = wallStones.size > 0 ? half / wallStones.size : 0;
+      for (const idx of region) {
+        territory[idx] = owner;
+        instability[idx] = inst;
+      }
     }
   }
 
-  return { territory };
+  return { territory, instability };
 }

@@ -63,7 +63,8 @@ const scene = new BoardScene(container, def);
  */
 function renderState(): void {
   scene.setState(state);
-  scene.setTerritory(computeTerritory(def, state.cells).territory);
+  const t = computeTerritory(def, state.cells);
+  scene.setTerritory(t.territory, t.instability);
 }
 
 renderState();
