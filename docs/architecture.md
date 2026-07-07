@@ -43,7 +43,7 @@ src/
 
 ### 3. マテリアル／色写像（ownership → 色）— 推奨: 第一段は vertexColors 付き MeshStandardMaterial
 
-`ownership[-1,1]` を白流体 ↔ 黒流体の色 lerp に写像し、`ownership≈0`（係争）は中立の濁り色にする。**まず頂点ごとに `ownership` から頂点カラーを与えた `MeshStandardMaterial`（`vertexColors: true`・`transparent`・低 `roughness`）で早く液体感を出す**。既存の石も `MeshStandardMaterial` なので画作りが揃う。`pressure` は当面デバッグ表示（効きの強い所を可視化）に使い、色には必須ではない。
+`ownership[-1,1]` を白流体 ↔ 黒流体の色 lerp に写像し、`ownership≈0`（係争）は中立の濁り色にする。**まず頂点ごとに `ownership` から頂点カラーを与えた `MeshStandardMaterial`（`vertexColors: true`・`transparent`・低 `roughness`）で早く液体感を出す**。既存の石も `MeshStandardMaterial` なので画作りが揃う。ただし `ownership = (pos−neg)/total` は **presence（効きの総量）を無視する**——盤に石が1つでもあれば、効きの弱い遠方の点でも片色なら ownership が ±1 に飽和する。そこは `height≈1`（最も係争）なのに濃色に塗られてしまい、地形（盛り上がり）と色（濃＝決着）が食い違う。これを避けるため **色の彩度／不透明度(α)は presence（または `pressure`）でゲートする**——ownership だけで着色すると効きの弱い未確定域が濃色になる。第一段でも α か彩度を presence に比例させ、効きの届かない域を薄く抜く。`pressure` は当面デバッグ表示（効きの強い所を可視化）にも使うが、この着色ゲートとして色にも効かせる。
 候補: `ShaderMaterial` で流れ・コースティクスまで作り込む（第二段。「出してから磨く」）。
 
 ### 4. 波立ち（時間アニメ）— 推奨: 時刻は render 側だけが持ち、基底 height に加算する
