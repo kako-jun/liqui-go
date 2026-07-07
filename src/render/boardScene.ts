@@ -34,27 +34,20 @@ const SNAP_THRESHOLD = 0.5;
 // クリックとカメラドラッグの弁別しきい値（px）。これ未満の移動をクリックとみなす。
 const CLICK_MOVE_THRESHOLD_PX = 6;
 
-// ---- 柵（石＝境界線・壁）レンダリングの定数（描画寄り。game/RULES には置かない）----
-// 盤は XZ 平面・Y 上。各石は交点に立つ縦の柱＋同色隣接を繋ぐ壁として描く（丸い碁石は描かない）。
-// 柵ノード（各石）＝交点に立つ縦の柱。板上面 y=0 から立つ。
-const FENCE_HEIGHT = 0.5; // 柱の高さ（board 単位）。
-const POST_THICK = 0.12; // 柱の断面（正方形の一辺）。
-// 同色・直交隣接の実線壁（細い縦の板）。交点間（距離1）を繋ぐ。柱より薄い。
-const WALL_THICK = 0.07; // 実線壁の板厚。
-const WALL_HEIGHT = FENCE_HEIGHT * 0.9; // 壁は柱よりわずかに低く（柱を節として見せる）。
-// 同色・斜め隣接の「隙間のある斜め線」。実線より細く・低く・破線で繋がりきらない表現。
-const DIAG_THICK = 0.05; // 斜め破線の板厚（実線 WALL_THICK より細い）。
-const DIAG_HEIGHT = FENCE_HEIGHT * 0.6; // 斜めは低い（弱い連結）。
-const DIAG_DASHES = 3; // 斜めを何本の破線に割るか（間に隙間が空く）。
-const DIAG_FILL = 0.55; // 各破線が区間長に占める割合（残りが隙間）。
-const DIAG_SOLID_OPACITY = 0.75; // 実線壁より薄い斜め線の不透明度（両端1石でも半透け）。
-// 0.5石（未固形のセメント）＝半透明で揺らぐ壊れやすい柵。1石＝不透明の硬い柵。
-const HALF_OPACITY = 0.5; // 0.5石が絡む柱・壁の不透明度。
-// 0.5柵の揺らぎ（任意・決定的）。時刻は render の clock、位相は交点座標から算出（Math.random 不使用）。
-const FENCE_WOBBLE_FREQ = 1.8; // 揺れの角速度（rad/s 相当）。
-const FENCE_WOBBLE_AMP = 0.035; // 揺れの最大振幅（board 単位・上下の微小バブ）。
-const FENCE_WOBBLE_PHASE_X = 1.7;
-const FENCE_WOBBLE_PHASE_Z = 2.3;
+// ---- 柵（石＝境界線）レンダリングの定数（描画寄り。game/RULES には置かない）----
+// 盤は XZ 平面・Y 上。各石は交点に立つ縦の柱＋同色隣接（8近傍）を結ぶ連結線で描く（丸い碁石は描かない）。
+// 視覚文法（確定）: 色=黒/白／不透明=1石・半透明=0.5石／実線=両端1石・破線=どちらか0.5石。
+// 太さ・高さは全て一定（直交/斜め・実線/破線で高さや太さを変えない＝高さで意味を持たせない）。柵は静止。
+const FENCE_HEIGHT = 0.5; // 柱の高さ（board 単位）。全柱で一定。
+const POST_THICK = 0.12; // 柱の断面（正方形の一辺）。全柱で一定。
+// 連結線（同色隣接ペアを結ぶ板）。直交でも斜めでも太さ・高さは同じ。
+const LINK_THICK = 0.07; // 連結線の板厚。全線一定。
+const LINK_HEIGHT = FENCE_HEIGHT * 0.9; // 連結線の高さ。全線一定（柱をわずかに節として残す）。
+// 破線（連結線のどちらかの端点が0.5石のとき）。両端1石の実線は破線化しない。直交/斜め共通のダッシュ生成。
+const DASH_COUNT = 3; // 1連結線を何本の破線に割るか（間に隙間が空く）。
+const DASH_FILL = 0.55; // 各破線が区間長に占める割合（残りが隙間）。
+// 0.5石が絡む柵の不透明度（半透明）。1石だけの柵は 1.0（不透明）。
+const HALF_OPACITY = 0.5;
 
 // ---- 水（取得済みの地）レンダリングの定数 ----
 // 一色の柵で囲い切った空点＝その色の水を、海抜0付近の凪の池として平たいタイルで溜める。
@@ -121,11 +114,8 @@ export class BoardScene {
   private readonly moveSourceRing: THREE.Mesh;
   private readonly moveSourceRingMat: THREE.MeshBasicMaterial;
 
-  // 時刻は render 側だけが持つ（game は純粋・時刻を持てない）。0.5柵の揺らぎに使う。
+  // 時刻は render 側だけが持つ（game は純粋・時刻を持てない）。水面の揺らぎに使う（柵は静止）。
   private readonly clock = new THREE.Clock();
-  // 0.5石（半透明）の柵メッシュを揺らすための追跡（setState で作り直す）。
-  // baseY=静止時の中心 Y、phase=交点座標から決めた決定的位相。start() の RAF で上下にバブさせる。
-  private wobbleTargets: { mesh: THREE.Mesh; baseY: number; phase: number }[] = [];
 
   private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
@@ -366,11 +356,12 @@ export class BoardScene {
       const isFull = Math.abs(v) === 1;
       // 柵ノード（各石）＝交点に立つ縦の柱。
       this.addPost(x, y, isBlack, isFull);
-      // 同色隣接の壁（直交＝実線・斜め＝隙間ある斜め線）。二重描画回避の4方向だけ見る。
-      this.addWallIfSameColor(cells, x, y, v, x + 1, y, false); // 直交 +x
-      this.addWallIfSameColor(cells, x, y, v, x, y + 1, false); // 直交 +z
-      this.addWallIfSameColor(cells, x, y, v, x + 1, y + 1, true); // 斜め +x+z
-      this.addWallIfSameColor(cells, x, y, v, x + 1, y - 1, true); // 斜め +x−z
+      // 同色隣接（8近傍）を連結線で結ぶ。二重描画回避で +x/+z/+x+z/+x−z の4方向だけ見る。
+      // 直交/斜めは幾何が違うだけで、実線/破線・不透明/半透明は端点の石種(1/0.5)だけで決まる。
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y); // 直交 +x
+      this.addLinkIfSameColor(cells, x, y, v, x, y + 1); // 直交 +z
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y + 1); // 斜め +x+z
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y - 1); // 斜め +x−z
     }
   }
 
@@ -385,7 +376,6 @@ export class BoardScene {
       }
     }
     this.stoneGroup.clear();
-    this.wobbleTargets = [];
   }
 
   /**
@@ -495,114 +485,90 @@ export class BoardScene {
     this.waterAnim = [];
   }
 
-  /** 柵の柱/壁用マテリアル。1石＝不透明の硬い柵／0.5石が絡む柵＝半透明で揺らぐ壊れやすい柵。 */
-  private fenceMaterial(isBlack: boolean, solid: boolean): THREE.MeshStandardMaterial {
+  /** 柵の柱/連結線用マテリアル。opacity=1.0＝不透明の硬い柵（1石だけ）／0.5＝半透明（0.5石が絡む）。 */
+  private fenceMaterial(isBlack: boolean, opacity: number): THREE.MeshStandardMaterial {
+    const solid = opacity >= 1;
     return new THREE.MeshStandardMaterial({
       color: isBlack ? COLORS.black : COLORS.white,
       roughness: solid ? 0.5 : 0.25,
       metalness: 0,
       transparent: !solid,
-      opacity: solid ? 1 : HALF_OPACITY,
+      opacity,
     });
   }
 
-  /** 柵ノード（各石）＝交点 (x,z) に立つ縦の柱。0.5石は半透明で揺れる。 */
+  /** 柵ノード（各石）＝交点 (x,z) に立つ縦の柱。1石=不透明／0.5石=半透明。太さ・高さは全柱一定・静止。 */
   private addPost(x: number, z: number, isBlack: boolean, isFull: boolean): void {
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(POST_THICK, FENCE_HEIGHT, POST_THICK),
-      this.fenceMaterial(isBlack, isFull),
+      this.fenceMaterial(isBlack, isFull ? 1 : HALF_OPACITY),
     );
     mesh.position.set(x, FENCE_HEIGHT / 2, z);
     this.stoneGroup.add(mesh);
-    if (!isFull) this.registerWobble(mesh, x, z, FENCE_HEIGHT / 2);
   }
 
   /**
-   * (x,z) の石 v と隣 (nx,nz) が同色なら壁を張る。異色・空点・盤外は張らない。
-   * どちらかが 0.5 石なら壁も半透明（壊れやすい表現）。diagonal=true なら隙間ある斜め線。
+   * (x,z) の石 v と隣 (nx,nz) が同色なら連結線を引く。異色・空点・盤外は引かない。
+   * 視覚文法（確定）: 両端とも1石→実線・不透明／どちらかが0.5石→破線・半透明。直交/斜めは無関係。
    */
-  private addWallIfSameColor(
-    cells: number[],
-    x: number,
-    z: number,
-    v: number,
-    nx: number,
-    nz: number,
-    diagonal: boolean,
-  ): void {
+  private addLinkIfSameColor(cells: number[], x: number, z: number, v: number, nx: number, nz: number): void {
     if (!inBounds(this.def, nx, nz)) return;
     const nv = cells[nz * this.def.lines + nx];
     if (nv === 0) return;
     if (v > 0 !== nv > 0) return; // 異色は繋がない
     const isBlack = v > 0;
-    // 両端とも1石なら実線（不透明）、どちらかが0.5なら半透明。
+    // 石種だけで決める: 両端1石なら実線・不透明、どちらか0.5なら破線・半透明。
     const solid = Math.abs(v) === 1 && Math.abs(nv) === 1;
-    if (diagonal) this.addDiagonal(x, z, nx, nz, isBlack, solid);
-    else this.addWall(x, z, nx, nz, isBlack, solid);
+    this.addLink(x, z, nx, nz, isBlack, !solid, solid ? 1 : HALF_OPACITY);
   }
 
-  /** 同色・直交隣接の実線壁（細い縦の板）。交点間（距離1）を繋ぐ。 */
-  private addWall(x: number, z: number, nx: number, nz: number, isBlack: boolean, solid: boolean): void {
-    const cx = (x + nx) / 2;
-    const cz = (z + nz) / 2;
+  /**
+   * 同色隣接ペア (ax,az)-(bx,bz) を連結線で結ぶ。太さ・高さは全線一定（直交/斜めで変えない）。
+   * isDashed=false なら全長1本の実線、true なら DASH_COUNT 本の破線（間に隙間＝0.5が絡むことを表す）。
+   * 破線生成は直交・斜め共通（幾何は端点座標に沿う）。opacity は 1.0（不透明）か HALF_OPACITY（半透明）。
+   */
+  private addLink(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    isBlack: boolean,
+    isDashed: boolean,
+    opacity: number,
+  ): void {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const fullLen = Math.hypot(dx, dz); // 直交=1 / 斜め=√2
+    const angleY = Math.atan2(-dz, dx); // local +X を (dx,0,dz) 方向へ
+    if (!isDashed) {
+      // 実線: 全長1本の板を中点に置く。
+      this.addBar(ax + dx / 2, az + dz / 2, fullLen, angleY, isBlack, opacity);
+      return;
+    }
+    // 破線: DASH_COUNT 本の短い板を等間隔に（間に隙間）。
+    const dashLen = (fullLen / DASH_COUNT) * DASH_FILL;
+    for (let k = 0; k < DASH_COUNT; k++) {
+      const t = (k + 0.5) / DASH_COUNT; // 区間中央
+      this.addBar(ax + dx * t, az + dz * t, dashLen, angleY, isBlack, opacity);
+    }
+  }
+
+  /** 連結線1本ぶんの板（Box）を中心 (cx,cz)・長さ len・向き angleY で置く。高さ・厚さは全線一定。 */
+  private addBar(
+    cx: number,
+    cz: number,
+    len: number,
+    angleY: number,
+    isBlack: boolean,
+    opacity: number,
+  ): void {
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1, WALL_HEIGHT, WALL_THICK),
-      this.fenceMaterial(isBlack, solid),
+      new THREE.BoxGeometry(len, LINK_HEIGHT, LINK_THICK),
+      this.fenceMaterial(isBlack, opacity),
     );
-    mesh.position.set(cx, WALL_HEIGHT / 2, cz);
-    mesh.rotation.y = Math.atan2(-(nz - z), nx - x); // local +X を (dx,0,dz) 方向へ
+    mesh.position.set(cx, LINK_HEIGHT / 2, cz);
+    mesh.rotation.y = angleY;
     this.stoneGroup.add(mesh);
-    if (!solid) this.registerWobble(mesh, cx, cz, WALL_HEIGHT / 2);
-  }
-
-  /**
-   * 同色・斜め隣接の「隙間のある斜め線」。実線壁より細く・低く、DIAG_DASHES 本の破線で繋ぐ
-   * （碁の斜めは繋がりきらない＝隙間で表す）。両端1石でも DIAG_SOLID_OPACITY で薄く出す。
-   */
-  private addDiagonal(x: number, z: number, nx: number, nz: number, isBlack: boolean, solid: boolean): void {
-    const dx = nx - x;
-    const dz = nz - z;
-    const fullLen = Math.hypot(dx, dz); // = √2
-    const angleY = Math.atan2(-dz, dx); // local +X を斜め方向へ
-    const dashLen = (fullLen / DIAG_DASHES) * DIAG_FILL; // 各破線長（残りが隙間）
-    const opacity = solid ? DIAG_SOLID_OPACITY : HALF_OPACITY;
-    for (let k = 0; k < DIAG_DASHES; k++) {
-      const t = (k + 0.5) / DIAG_DASHES; // 区間中央
-      const cx = x + dx * t;
-      const cz = z + dz * t;
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(dashLen, DIAG_HEIGHT, DIAG_THICK),
-        new THREE.MeshStandardMaterial({
-          color: isBlack ? COLORS.black : COLORS.white,
-          roughness: 0.3,
-          metalness: 0,
-          transparent: true,
-          opacity,
-        }),
-      );
-      mesh.position.set(cx, DIAG_HEIGHT / 2, cz);
-      mesh.rotation.y = angleY;
-      this.stoneGroup.add(mesh);
-      if (!solid) this.registerWobble(mesh, cx, cz, DIAG_HEIGHT / 2);
-    }
-  }
-
-  /** 0.5柵メッシュを揺らし対象に登録。位相は交点座標から決定的に算出（Math.random 不使用）。 */
-  private registerWobble(mesh: THREE.Mesh, x: number, z: number, baseY: number): void {
-    const phase = x * FENCE_WOBBLE_PHASE_X + z * FENCE_WOBBLE_PHASE_Z;
-    this.wobbleTargets.push({ mesh, baseY, phase });
-  }
-
-  /**
-   * 0.5柵の揺らぎ。時刻 t を read して各メッシュの Y を baseY + AMP*sin(t*FREQ + phase) に上下バブ。
-   * game は時刻を持てないので、揺らぎは render のここだけで足す（形状は毎手 game から来る静的値）。
-   */
-  private animateFences(): void {
-    if (this.wobbleTargets.length === 0) return;
-    const t = this.clock.getElapsedTime();
-    for (const w of this.wobbleTargets) {
-      w.mesh.position.y = w.baseY + FENCE_WOBBLE_AMP * Math.sin(t * FENCE_WOBBLE_FREQ + w.phase);
-    }
   }
 
   start(): void {
@@ -611,8 +577,7 @@ export class BoardScene {
     const loop = () => {
       if (!this.running) return;
       this.controls.update();
-      this.animateFences(); // 0.5柵の揺らぎを毎フレーム更新（時刻は render 側のみ）
-      this.animateWater(); // 不安定な地の水面の揺らぎを毎フレーム更新
+      this.animateWater(); // 不安定な地の水面の揺らぎを毎フレーム更新（柵は静止）
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
