@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { BoardSizeDef } from "../game/boardDef";
 import type { GameState } from "../game/state";
+import type { HeightField } from "../game/heightmap";
 // inBounds の型・関数 import は「描画→game」の一方向依存なので規律に反しない。
 // 合法判定・commit は持ち込まない（それは配線層 main.ts の責務）。
 import { fromIndex, inBounds } from "../game/coords";
@@ -18,6 +19,10 @@ const COLORS = {
   legal: 0x4fe08a, // ホバー標示（置ける）＝緑
   illegal: 0xe0544f, // ホバー標示（置けない）＝赤
   moveSource: 0xf5b942, // ムーブ元の選択マーカー＝琥珀（ホバーリングと別色）
+  // 液体地形（#6）の水色。ownership を白↔黒流体で lerp し、効きの弱い域は中立の濁り色へ抜く。
+  waterWhite: 0xd6eeff, // 白（−）が支配する流体の色
+  waterBlack: 0x0e2c44, // 黒（＋）が支配する流体の色
+  waterNeutral: 0x2b6f7a, // 効きが届かない／拮抗する係争域の中立の濁り色
 };
 
 // 交点平面の y（格子線と同じ高さ）。raycast で拾う水平面。
@@ -26,6 +31,28 @@ const POINT_PLANE_Y = 0.01;
 const SNAP_THRESHOLD = 0.5;
 // クリックとカメラドラッグの弁別しきい値（px）。これ未満の移動をクリックとみなす。
 const CLICK_MOVE_THRESHOLD_PX = 6;
+
+// ---- 液体地形（水面）レンダリングのチューニング定数（描画寄り。game/RULES には置かない）----
+// 1 セル（交点間隔=1）を何分割して水面格子を張るか。上げるほど滑らかで重い。
+const WATER_SUBDIV = 6;
+// height[0,1] を board 単位の頂点 Y へ写す係数（係争度が高いほど盛り上がる）。
+const HEIGHT_SCALE = 0.8;
+// 波立ちの角速度（rad/s 相当）。時刻 t に掛ける。
+const WOBBLE_FREQ = 1.6;
+// 波立ちの最大振幅（height=1 のとき。凪=height0 では 0）。board 単位。
+const WOBBLE_AMP = 0.12;
+// 波の位相を頂点座標から決定するための係数（Math.random 不使用＝再現的）。
+const WOBBLE_PHASE_X = 1.7;
+const WOBBLE_PHASE_Z = 2.3;
+// 水面メッシュ全体の持ち上げ量。板の上面(y=0)との z-fighting を避け、格子線(0.01)より下に置く。
+const WATER_LIFT = 0.005;
+// 全体の不透明度（第一段は per-vertex alpha を使わず彩度ゲート＋一律 opacity で液感を出す）。
+const WATER_OPACITY = 0.85;
+// ownership 色を presence（効きの総量）でゲートする閾。HeightField は presence を直接持たず
+// pressure(=total) を公開するので、単調な pressure に smoothstep を掛けてゲートする。
+// pressure がこの下限以下なら中立の濁り色、上限以上なら ownership 色を全掛けする。
+const PRESSURE_GATE_LOW = 0.08;
+const PRESSURE_GATE_HIGH = 1.0;
 
 export class BoardScene {
   private readonly renderer: THREE.WebGLRenderer;
@@ -65,6 +92,21 @@ export class BoardScene {
   // 判定は持ち込まない。main.ts が座標を渡して出す/隠す。
   private readonly moveSourceRing: THREE.Mesh;
   private readonly moveSourceRingMat: THREE.MeshBasicMaterial;
+
+  // ---- 液体地形（水面）。setHeightField で初回だけ生成し、以降は頂点バッファのみ更新（再生成しない＝リーク防止）。----
+  private readonly clock = new THREE.Clock(); // 時刻は render 側だけが持つ（game は純粋・時刻を持てない）。
+  private waterGeometry?: THREE.BufferGeometry;
+  private waterMaterial?: THREE.MeshStandardMaterial;
+  // 波アニメで毎フレーム使う頂点別データ（setHeightField で更新）。
+  private waterBaseY?: Float32Array; // 各頂点の基底 Y（= sampledHeight * HEIGHT_SCALE）
+  private waterAmp?: Float32Array; // 各頂点の波振幅（= sampledHeight * WOBBLE_AMP・凪=0）
+  private waterPhase?: Float32Array; // 各頂点の波位相（座標から決定的に算出）
+  // 頂点色計算の使い回し（毎頂点 new を避ける）。
+  private readonly waterWhite = new THREE.Color(COLORS.waterWhite);
+  private readonly waterBlack = new THREE.Color(COLORS.waterBlack);
+  private readonly waterNeutral = new THREE.Color(COLORS.waterNeutral);
+  private readonly waterOwnColor = new THREE.Color();
+  private readonly waterFinalColor = new THREE.Color();
 
   private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
@@ -310,12 +352,155 @@ export class BoardScene {
     }
   }
 
+  /**
+   * 確定度 heightmap（#5 の純粋関数出力）を水面メッシュに反映する。
+   * - 初回だけ格子ジオメトリ／マテリアル／メッシュを生成する。以降は頂点バッファ（position/color）
+   *   だけを更新し、ジオメトリを作り直さない（毎手呼ばれてもリークしない）。
+   * - 盤 [0,span]×[0,span]（span=lines-1）を各セル WATER_SUBDIV 分割した格子。頂点 (wx, y, wz) は
+   *   board 単位（交点 (x,y) は盤ワールド (x, 上=Y, z=y) に対応するので wz が z 側＝盤の y 座標）。
+   * - 各頂点の height/ownership/pressure は囲む4交点の bilinear 補間でサンプルする。
+   * - 基底 Y = sampledHeight * HEIGHT_SCALE（凪=0・係争=盛り上がる）。波立ちは start() ループで足す。
+   * - 頂点色 = presence でゲートした ownership 色（弱効きは中立の濁り色へ抜く）。
+   */
+  setHeightField(field: HeightField): void {
+    const lines = field.lines;
+    const span = lines - 1;
+    const segs = span * WATER_SUBDIV; // 1 軸あたりのセグメント数
+    const vpa = segs + 1; // 1 軸あたりの頂点数
+    const vcount = vpa * vpa;
+
+    if (!this.waterGeometry) {
+      // 初回生成。position/color 属性と三角形 index を張る。
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vcount * 3), 3));
+      geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(vcount * 3), 3));
+      const indices: number[] = [];
+      for (let row = 0; row < segs; row++) {
+        for (let col = 0; col < segs; col++) {
+          const a = row * vpa + col;
+          const b = row * vpa + col + 1;
+          const c = (row + 1) * vpa + col;
+          const d = (row + 1) * vpa + col + 1;
+          // (a,c,b),(b,c,d) の巻き順で法線が +Y（上）を向く（XZ 平面・Y 上）。
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+      geom.setIndex(indices);
+
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: WATER_OPACITY,
+        roughness: 0.2,
+        metalness: 0,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      // 板の上面(y=0)との z-fighting を避けて少しだけ持ち上げる（格子線 0.01 より下・石より下）。
+      mesh.position.y = WATER_LIFT;
+
+      this.waterGeometry = geom;
+      this.waterMaterial = mat;
+      this.waterBaseY = new Float32Array(vcount);
+      this.waterAmp = new Float32Array(vcount);
+      this.waterPhase = new Float32Array(vcount);
+      this.scene.add(mesh);
+    }
+
+    const geom = this.waterGeometry;
+    const posAttr = geom.getAttribute("position") as THREE.BufferAttribute;
+    const colAttr = geom.getAttribute("color") as THREE.BufferAttribute;
+    const positions = posAttr.array as Float32Array;
+    const colors = colAttr.array as Float32Array;
+    const baseY = this.waterBaseY!;
+    const amp = this.waterAmp!;
+    const phase = this.waterPhase!;
+
+    for (let row = 0; row <= segs; row++) {
+      const wz = row / WATER_SUBDIV;
+      for (let col = 0; col <= segs; col++) {
+        const wx = col / WATER_SUBDIV;
+        const vi = row * vpa + col;
+
+        const h = this.sampleField(field, field.height, wx, wz);
+        const ow = this.sampleField(field, field.ownership, wx, wz);
+        const pr = this.sampleField(field, field.pressure, wx, wz);
+
+        const y = h * HEIGHT_SCALE;
+        positions[vi * 3] = wx;
+        positions[vi * 3 + 1] = y;
+        positions[vi * 3 + 2] = wz;
+        baseY[vi] = y;
+        amp[vi] = h * WOBBLE_AMP; // 凪(height0)=0・係争(height1)=最大
+        phase[vi] = wx * WOBBLE_PHASE_X + wz * WOBBLE_PHASE_Z; // 座標から決定的に散らす
+
+        // ownership[-1,1] を白↔黒流体で lerp: (ow+1)/2 が 0=白 / 1=黒。
+        const t = (ow + 1) / 2;
+        this.waterOwnColor.lerpColors(this.waterWhite, this.waterBlack, t);
+        // 効きの弱い域（pressure 小）は ownership が飽和しても濃色にせず中立へ抜く。
+        const gate = THREE.MathUtils.smoothstep(pr, PRESSURE_GATE_LOW, PRESSURE_GATE_HIGH);
+        this.waterFinalColor.lerpColors(this.waterNeutral, this.waterOwnColor, gate);
+        colors[vi * 3] = this.waterFinalColor.r;
+        colors[vi * 3 + 1] = this.waterFinalColor.g;
+        colors[vi * 3 + 2] = this.waterFinalColor.b;
+      }
+    }
+
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+    // 基底位置で法線を張り直す（PBR ライティングで凹凸を陰影として読ませる）。
+    // 波立ちの毎フレーム法線再計算まではしない（第一段・コスト回避）。
+    geom.computeVertexNormals();
+  }
+
+  /**
+   * (wx,wz) を囲む4交点から値配列を bilinear 補間する。交点値の添字は gz*lines+gx（= indexOf(def,gx,gz)）。
+   * ix=floor(wx) を [0,lines-2] にクランプ、tx=wx-ix（wz/tz も同様。z 側が盤の y 座標）。
+   */
+  private sampleField(field: HeightField, values: number[], wx: number, wz: number): number {
+    const lines = field.lines;
+    let ix = Math.floor(wx);
+    if (ix < 0) ix = 0;
+    else if (ix > lines - 2) ix = lines - 2;
+    let iz = Math.floor(wz);
+    if (iz < 0) iz = 0;
+    else if (iz > lines - 2) iz = lines - 2;
+    const tx = wx - ix;
+    const tz = wz - iz;
+    const v00 = values[iz * lines + ix];
+    const v10 = values[iz * lines + (ix + 1)];
+    const v01 = values[(iz + 1) * lines + ix];
+    const v11 = values[(iz + 1) * lines + (ix + 1)];
+    const top = v00 * (1 - tx) + v10 * tx;
+    const bot = v01 * (1 - tx) + v11 * tx;
+    return top * (1 - tz) + bot * tz;
+  }
+
+  /**
+   * 水面の波立ち。時刻 t を read して各頂点 Y を baseY + amp*sin(t*FREQ + phase) に更新する。
+   * game は時刻を持てないので、波は render のここだけで足す（基底 height は毎手 game から来る静的値）。
+   */
+  private animateWater(): void {
+    if (!this.waterGeometry || !this.waterBaseY) return;
+    const t = this.clock.getElapsedTime();
+    const posAttr = this.waterGeometry.getAttribute("position") as THREE.BufferAttribute;
+    const positions = posAttr.array as Float32Array;
+    const baseY = this.waterBaseY;
+    const amp = this.waterAmp!;
+    const phase = this.waterPhase!;
+    for (let vi = 0; vi < baseY.length; vi++) {
+      positions[vi * 3 + 1] = baseY[vi] + amp[vi] * Math.sin(t * WOBBLE_FREQ + phase[vi]);
+    }
+    posAttr.needsUpdate = true;
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;
     const loop = () => {
       if (!this.running) return;
       this.controls.update();
+      this.animateWater(); // 水面の波立ちを毎フレーム更新（時刻は render 側のみ）
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
@@ -346,6 +531,9 @@ export class BoardScene {
     // 選択マーカーのジオメトリ/マテリアルを明示解放（renderer.dispose では解放されない）。
     this.moveSourceRing.geometry.dispose();
     this.moveSourceRingMat.dispose();
+    // 水面のジオメトリ/マテリアルも明示解放（生成済みなら）。
+    this.waterGeometry?.dispose();
+    this.waterMaterial?.dispose();
     this.renderer.dispose();
     el.remove();
   }
