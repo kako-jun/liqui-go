@@ -160,6 +160,70 @@ describe("computeTerritory — 値域・NaN無し・純粋性（3盤サイズ）
   }
 });
 
+describe("computeTerritory — N2 単色全域（空盤に1石だけ→接する全域その色）", () => {
+  it("黒石1つだけ→接する全空点が黒地(+1)・白は0・石セルは0（盤端=壁・単色なら全域その色）", () => {
+    const cells = emptyCells();
+    set(cells, "9", 4, 4, 1); // 天元に黒1石だけ
+    const { territory } = computeTerritory(D9, cells);
+    // 石セルは水が乗らない＝0。
+    expect(territory[indexOf(D9, 4, 4)]).toBe(0);
+    // 残る全空点（81−1=80）が1つの領域＝黒だけに接する→全て +1。
+    const black = territory.filter((v) => v === 1).length;
+    expect(black).toBe(pointCount(D9) - 1);
+    // 白地は一切生じない。
+    expect(territory.some((v) => v === -1)).toBe(false);
+    // computeScore でも黒=80・白=0（大きな値・white=0）。
+    expect(computeScore(D9, cells)).toEqual({ black: pointCount(D9) - 1, white: 0 });
+  });
+
+  it("白石1つだけ→接する全空点が白地(−1)・黒は0", () => {
+    const cells = emptyCells();
+    set(cells, "9", 4, 4, -1);
+    const { territory } = computeTerritory(D9, cells);
+    expect(territory.filter((v) => v === -1).length).toBe(pointCount(D9) - 1);
+    expect(territory.some((v) => v === 1)).toBe(false);
+    expect(computeScore(D9, cells)).toEqual({ black: 0, white: pointCount(D9) - 1 });
+  });
+});
+
+describe("computeTerritory — N3 複数セル領域と角（region全配布・盤端壁で色付く）", () => {
+  it("黒で内部2マス(3,3)(4,3)を囲い切ると両セルが+1（全regionに配る）・外周は白1石で中立化", () => {
+    const cells = emptyCells();
+    // 内部の2マス領域 {(3,3),(4,3)} を黒石で完全包囲（両セルの外側直交隣接すべて）。
+    set(cells, "9", 2, 3, 1);
+    set(cells, "9", 3, 2, 1);
+    set(cells, "9", 4, 2, 1);
+    set(cells, "9", 5, 3, 1);
+    set(cells, "9", 3, 4, 1);
+    set(cells, "9", 4, 4, 1);
+    // 外周の広い領域を白石1つで黒白両接＝中立にする（外周が黒地に染まるのを防ぐ）。
+    set(cells, "9", 8, 8, -1);
+    const { territory } = computeTerritory(D9, cells);
+    // region の全セルに +1 が配られる（1セルだけでなく両方）。
+    expect(territory[indexOf(D9, 3, 3)]).toBe(1);
+    expect(territory[indexOf(D9, 4, 3)]).toBe(1);
+    // 外周は中立 0。
+    expect(territory[indexOf(D9, 0, 0)]).toBe(0);
+    // スコアはポケットの2マスだけ＝black:2。
+    expect(computeScore(D9, cells)).toEqual({ black: 2, white: 0 });
+  });
+
+  it("盤の角(0,0)を黒石(1,0)(0,1)＋盤端2辺で仕切ると角の地が+1（角=盤端壁で色付く）", () => {
+    const cells = emptyCells();
+    // 角(0,0)の内側直交隣接は (1,0)(0,1) の2つだけ（他2方向は盤端＝壁）。両方黒で囲い切る。
+    set(cells, "9", 1, 0, 1);
+    set(cells, "9", 0, 1, 1);
+    // 外周を白1石で中立化（角ポケット以外を黒地にしない）。
+    set(cells, "9", 8, 8, -1);
+    const { territory } = computeTerritory(D9, cells);
+    // 角は盤端2辺＋黒石2つで囲われ +1。
+    expect(territory[indexOf(D9, 0, 0)]).toBe(1);
+    // 外周は中立。
+    expect(territory[indexOf(D9, 5, 5)]).toBe(0);
+    expect(computeScore(D9, cells)).toEqual({ black: 1, white: 0 });
+  });
+});
+
 describe("computeScore — 取得済みの地の体積(m³・1マス=1m³)", () => {
   it("空盤は 0/0（地なし）", () => {
     expect(computeScore(D9, emptyCells())).toEqual({ black: 0, white: 0 });
