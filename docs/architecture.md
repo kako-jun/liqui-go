@@ -13,7 +13,7 @@ src/
 │   ├── stones.test.ts エンジンの境界値テスト
 │   ├── rules.ts       合法手判定とターン確定（純粋）: canPlaceAt / placementRejection / moveRejection / extraRejection / isStarPoint / legalPlacements / tickCooldowns / commitPlacement / resolveSimultaneous（着手・ムーブ・追加ポアを加算デルタ寄与モデルで統一解決・ルール①②③）
 │   ├── rules.test.ts  合法手判定・cooldown 遷移・同時着手・純粋性の境界値テスト
-│   ├── territory.ts   取得済みの地の検出（純粋・render非依存）: computeTerritory（一色の柵で囲われた地＋不安定さ）
+│   ├── territory.ts   取得済みの地の検出（純粋・render非依存）: computeTerritory（囲われた地＋不安定さ）/ computeScore（水量=m³=スコア）
 │   ├── territory.test.ts  地の判定・不安定さ・値域・純粋性の境界値テスト
 │   └── state.ts       実行時状態 GameState（完全シリアライズ可能）
 └── render/          描画層。GameState を読んで描くだけ
@@ -29,6 +29,7 @@ src/
 - **地の判定**: 空点を**直交連結でフラッドフィル**し、その領域に直交隣接する石の**符号**を集める。全て黒(+)→`territory=+1`、全て白(−)→`−1`、両色混在 or 石に一つも接しない（盤端だけに面する・空盤含む）→`0`（中立＝乾く）。石セルは `0`（柵の上に水は乗らない）。盤端は壁扱い（境界だが色なし）。石は絶対値でなく**符号**を見る（1石も0.5石も同色の壁として囲いに寄与）＝囲碁の地判定そのもの。
 - **不安定さ** `instability[i]` ∈ [0,1] ＝ その領域を囲う石のうち **0.5石（|v|=0.5）が占める割合**（領域単位で全セルに同値を配る）。全部1石→`0`（硬い柵＝確定＝安定）、0.5 が混ざるほど→`1`（柔らかい柵＝不安定＝流れ出しそう）。design.md「0.5石＝柔らかく不安定」「薄い囲み＝不安定＝標高が高い」を体現する。
 - 返り値 `{ territory: number[], instability: number[] }`（長さ = `pointCount(def)`）。純粋・非破壊・決定論。9/13/19 路で NaN/Infinity を出さない。
+- スコアは territory の ±1 を数えた体積＝m³（`computeScore`。1マス=1m³）。
 
 > 旧 `heightmap.ts`（各石の指数減衰カーネルで「効きの影響場」を作り「高さ＝係争度」を出すモデル）は**誤り**だった。丸い碁石を前提にし、design.md 表示仕様の核（石＝柵・水＝囲われて溜まった地・囲い無し＝乾く）を全くモデルしていなかったため**撤回・削除**した（session770）。
 
@@ -64,7 +65,6 @@ design.md 表示仕様どおり「**石＝柵**」「**水＝取得済みの地*
 ### 未実装（次段）
 
 - **流れ出す演出（リーク）**: 0.5 の柵が壊れる瞬間・侵食されている地の水が流出するアニメ（design.md「0.5石が消える瞬間＝枠が崩れて液体が流れ出す」）。
-- **#7 スコア表示**: 盤上の水の総体積 = 取得済みの地 = m³。
 
 ## 設計規律（dev-doctrine 準拠）
 
