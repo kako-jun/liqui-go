@@ -12,8 +12,9 @@
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
 import { computeTerritory } from "./game/territory";
-import { createInitialState } from "./game/state";
-import type { MoveRights } from "./game/state";
+import { createInitialState, applyState } from "./game/state";
+import type { MoveRights, GameState } from "./game/state";
+import { PRESETS } from "./game/presets";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
 import type { PlaceKind, Phenomenon, Player } from "./game/stones";
 import type { PlotRejection, PlotInput, Plot, ExtraInput, ResolveEvent } from "./game/rules";
@@ -107,6 +108,7 @@ hud.innerHTML = `
       <button id="hud-pour" type="button">ポア</button>
       <button id="hud-pass" type="button">パス</button>
     </div>
+    <div class="hud-row" id="hud-presets"></div>
     <div class="hud-row" id="hud-count"></div>
     <div class="hud-row" id="hud-score"></div>
     <div class="hud-row" id="hud-rights"></div>
@@ -298,6 +300,43 @@ passBtn.addEventListener("click", () => {
   }
   advanceTurn();
 });
+
+// ---- 局面プリセット（定番局面のワンクリック読み込み）----
+// canned GameState を applyState でロードし、ラウンド機械を初手（黒 main）へ戻す。
+// resolveRound のリセット手順と同じ（プロット・追加ポア・ムーブ選択を全解除・probe/マーカーを
+// place に戻す）。UI 生成・配線は main.ts の責務（game/render に UI を混ぜない既存方針）。
+function loadState(next: GameState): void {
+  state = applyState(next); // 検証つきクローン（不正 cells は throw で弾く）
+  // ラウンド機械リセット（resolveRound と同手順）。
+  blackPlot = null;
+  whitePlot = null;
+  blackExtra = null;
+  whiteExtra = null;
+  phase = "black-main";
+  pendingMoveFrom = null;
+  scene.setMoveSource(null);
+  scene.setLegalityProbe(placeProbe);
+  rejectEl.textContent = "";
+  eventsEl.textContent = "";
+  renderState(); // 柵＋水を描き直す（currentTerritory も更新）
+  updateHud(); // スコア・手数・権利・フェーズ表示を更新
+  scene.refreshHover(); // 盤が変わったのでホバー色（緑/赤）を即再評価
+}
+
+const presetsEl = document.getElementById("hud-presets")!;
+for (const p of PRESETS) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = p.name;
+  btn.addEventListener("click", () => loadState(p.state()));
+  presetsEl.appendChild(btn);
+}
+// 空盤に戻すボタン（プリセットと同じ経路でリセット）。
+const emptyBtn = document.createElement("button");
+emptyBtn.type = "button";
+emptyBtn.textContent = "空盤";
+emptyBtn.addEventListener("click", () => loadState(createInitialState("9")));
+presetsEl.appendChild(emptyBtn);
 
 // ---- クリック（ルール①同時プロット＋②追加ポア＋③ムーブ）----
 scene.onPointClick = (x, y) => {
