@@ -24,7 +24,8 @@ const LAMBDA = 2.5;
 
 /**
  * presence の基準効き量。total=T0 で presence=1-1/e（≈0.63）になる。
- * 1石が自点（dist=0, w=1）で presence≈0.63 になる基準（T0=1.0）。
+ * 1石=mag1 のとき自点（dist=0, w=1）で total=1 → presence≈0.63 になる基準（T0=1.0）。
+ * 0.5石なら自点 total=0.5 で presence≈0.39 と下がる（total は mag に線形）。
  */
 const T0 = 1.0;
 
@@ -43,6 +44,10 @@ export interface HeightField {
  * 盤面 cells から確定度 heightmap を算出する純粋関数。
  * 各交点について、盤上の全石からの指数減衰寄与を黒白別に積み、
  * dominance × presence で確定度 settled を出し、height = 1 - settled とする。
+ *
+ * 前提: `cells.length === pointCount(def)`（GameState が保証する）。
+ * 前提外の短い配列を渡すと `cells[j]` が undefined になり `Math.abs(undefined)=NaN`
+ * が全派生量へ伝播する。緩さ優先で防御コードは足さない（前提明記のみ）。
  */
 export function computeHeightField(def: BoardSizeDef, cells: number[]): HeightField {
   const n = pointCount(def);
