@@ -20,6 +20,9 @@ const COLORS = {
   moveSource: 0xf5b942, // ムーブ元の選択マーカー＝琥珀（ホバーリングと別色）
   // 柵（石＝境界線）の2色。黒石＝暗い柵色・白石＝明るい柵色（丸い碁石は描かない）。
   // black/white を柵の柱・壁の両方に流用する。
+  // 取得済みの地（水）の2色。黒（+）の地＝暗い水色／白（−）の地＝明るい水色。
+  waterBlack: 0x0e2c44, // 黒（+）が囲い切った地の流体色
+  waterWhite: 0xd6eeff, // 白（−）が囲い切った地の流体色
 };
 
 // 交点平面の y（格子線と同じ高さ）。raycast で拾う水平面。
@@ -51,12 +54,21 @@ const FENCE_WOBBLE_AMP = 0.035; // 揺れの最大振幅（board 単位・上下
 const FENCE_WOBBLE_PHASE_X = 1.7;
 const FENCE_WOBBLE_PHASE_Z = 2.3;
 
+// ---- 水（取得済みの地）レンダリングの定数 ----
+// 一色の柵で囲い切った空点＝その色の水を、海抜0付近の凪の池として平たいタイルで溜める。
+// 中立(0)・石セルは水なし（乾く）。この段では標高・流れは付けない（次段）。
+const WATER_Y = 0.03; // 水面の高さ（board 単位）。板上面(0)・格子線(0.01)の直上、柵(高さ0.5)より十分低い。
+const WATER_TILE_HALF = 0.5; // 水タイルの半辺。交点を中心にセル境界まで＝隣接同色が連続して一つの池に見える。
+const WATER_OPACITY = 0.5; // 水面の不透明度（半透明・下の格子が薄く透ける）。
+
 export class BoardScene {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: OrbitControls;
   private readonly stoneGroup = new THREE.Group();
+  // 取得済みの地（水）の専用 Group。setTerritory で毎手 clear→描き直す（geometry/material dispose）。
+  private readonly waterGroup = new THREE.Group();
   private readonly def: BoardSizeDef;
   private running = false;
   private readonly onResize = () => this.resize();
@@ -131,6 +143,7 @@ export class BoardScene {
     this.scene.add(dir);
 
     this.buildBoard();
+    this.scene.add(this.waterGroup); // 水（地）は柵の下に溜まる。先に足す。
     this.scene.add(this.stoneGroup);
 
     // ホバー標示リング（薄い水平トーラス）。初期は隠す。
@@ -356,6 +369,67 @@ export class BoardScene {
     this.wobbleTargets = [];
   }
 
+  /**
+   * 取得済みの地（territory）を水として溜める。territory[i] は computeTerritory の出力:
+   * +1=黒の地 / −1=白の地 / 0=中立（乾く）・石セル。±1 の空点だけに半透明の平たい水面タイルを
+   * 海抜0付近（WATER_Y）で置く。隣接する同色タイルはセル境界で連続して一つの池に見える。
+   * 黒/白ごとに1メッシュへマージ（描画コスト・continuity）。毎手 clear→描き直す（リーク防止）。
+   */
+  setTerritory(territory: number[]): void {
+    this.clearWater();
+    this.addWaterMesh(territory, 1); // 黒（+）の地＝暗い水色
+    this.addWaterMesh(territory, -1); // 白（−）の地＝明るい水色
+  }
+
+  /** territory の sign(+1黒/−1白) のセルを1枚のマージ水面メッシュにして waterGroup へ足す。 */
+  private addWaterMesh(territory: number[], sign: number): void {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    let quads = 0;
+    for (let i = 0; i < territory.length; i++) {
+      if (territory[i] !== sign) continue;
+      const { x, y } = fromIndex(this.def, i);
+      const x0 = x - WATER_TILE_HALF;
+      const x1 = x + WATER_TILE_HALF;
+      const z0 = y - WATER_TILE_HALF;
+      const z1 = y + WATER_TILE_HALF;
+      // 交点 (x,y) を中心に ±half の水平タイル（Y=WATER_Y）。4頂点 → 2三角形。
+      positions.push(x0, WATER_Y, z0, x1, WATER_Y, z0, x1, WATER_Y, z1, x0, WATER_Y, z1);
+      const b = quads * 4;
+      // 巻き順は法線が +Y（上）を向くように（XZ 平面・Y 上）。
+      indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
+      quads++;
+    }
+    if (quads === 0) return; // その色の地が無ければメッシュを作らない（空盤＝水なし）
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+      color: sign > 0 ? COLORS.waterBlack : COLORS.waterWhite,
+      transparent: true,
+      opacity: WATER_OPACITY,
+      roughness: 0.15,
+      metalness: 0,
+      side: THREE.DoubleSide,
+    });
+    this.waterGroup.add(new THREE.Mesh(geom, mat));
+  }
+
+  /** waterGroup の子（水面メッシュ）のジオメトリ/マテリアルを解放してから空にする（毎手のリーク防止）。 */
+  private clearWater(): void {
+    for (const child of this.waterGroup.children) {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const m = child.material;
+        if (Array.isArray(m)) for (const mm of m) mm.dispose();
+        else m.dispose();
+      }
+    }
+    this.waterGroup.clear();
+  }
+
   /** 柵の柱/壁用マテリアル。1石＝不透明の硬い柵／0.5石が絡む柵＝半透明で揺らぐ壊れやすい柵。 */
   private fenceMaterial(isBlack: boolean, solid: boolean): THREE.MeshStandardMaterial {
     return new THREE.MeshStandardMaterial({
@@ -503,8 +577,9 @@ export class BoardScene {
     // 選択マーカーのジオメトリ/マテリアルを明示解放（renderer.dispose では解放されない）。
     this.moveSourceRing.geometry.dispose();
     this.moveSourceRingMat.dispose();
-    // 柵メッシュのジオメトリ/マテリアルも明示解放（renderer.dispose では解放されない）。
+    // 柵・水メッシュのジオメトリ/マテリアルも明示解放（renderer.dispose では解放されない）。
     this.clearStones();
+    this.clearWater();
     this.renderer.dispose();
     el.remove();
   }

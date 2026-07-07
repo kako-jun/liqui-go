@@ -11,6 +11,7 @@
 //   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
+import { computeTerritory } from "./game/territory";
 import { createInitialState } from "./game/state";
 import type { MoveRights } from "./game/state";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
@@ -54,12 +55,15 @@ if (!container) throw new Error("#app が無い");
 const scene = new BoardScene(container, def);
 
 /**
- * state を描画へ反映する。石を「柵」（柱＋同色壁）として setState で描き直す。
- * state が変わるたびに必ずこの1関数で描き直す。
- * （水＝取得済みの地は次の増分で追加する。この段では石＝柵の描画のみ。）
+ * state を描画へ反映する。石を「柵」（柱＋同色壁）として setState で描き直し、
+ * 一色の柵で囲い切った地を computeTerritory で検出して水（setTerritory）を溜める。
+ * state が変わるたびに必ずこの1関数で両方描き直す（片方の更新漏れを防ぐ）。
+ * territory は純粋・軽量なので毎手 full recompute でよい（差分・キャッシュは持たない）。
+ * （標高＝不安定な地の盛り上がり・流れ出るアニメは次の増分。この段は囲い切った地＝低い池のみ。）
  */
 function renderState(): void {
   scene.setState(state);
+  scene.setTerritory(computeTerritory(def, state.cells).territory);
 }
 
 renderState();
