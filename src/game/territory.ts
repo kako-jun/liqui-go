@@ -7,6 +7,7 @@
 // これは囲碁の「地」判定と同じ: 空点を直交連結でフラッドフィルし、その領域に直交隣接する石の
 // 色が一色ならその色の地。足し算モデル（旧 heightmap の効きの影響場＝誤モデル #5）は使わない。
 import type { BoardSizeDef } from "./boardDef";
+import { RULES } from "./boardDef";
 import { pointCount, fromIndex, indexOf, inBounds } from "./coords";
 
 /** 直交4近傍（フラッドフィルと隣接石の走査に使う）。 */
@@ -98,4 +99,23 @@ export function computeTerritory(
   }
 
   return { territory, instability };
+}
+
+/**
+ * 取得済みの地の体積をスコア（m³）として集計する（純粋・非破壊・決定論）。
+ * design.md「デジタルならではの解決」: 水量(m³)＝取得済みの地＝スコア・1マス=1m³。
+ * computeTerritory の territory を数え、各色のセル数 × RULES.cellCubicMeters を返す。
+ */
+export function computeScore(def: BoardSizeDef, cells: number[]): { black: number; white: number } {
+  const { territory } = computeTerritory(def, cells);
+  let blackCells = 0;
+  let whiteCells = 0;
+  for (const t of territory) {
+    if (t === 1) blackCells++;
+    else if (t === -1) whiteCells++;
+  }
+  return {
+    black: blackCells * RULES.cellCubicMeters,
+    white: whiteCells * RULES.cellCubicMeters,
+  };
 }

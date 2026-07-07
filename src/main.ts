@@ -11,7 +11,7 @@
 //   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
-import { computeTerritory } from "./game/territory";
+import { computeTerritory, computeScore } from "./game/territory";
 import { createInitialState } from "./game/state";
 import type { MoveRights } from "./game/state";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
@@ -87,6 +87,7 @@ hud.innerHTML = `
       <button id="hud-pass" type="button">パス</button>
     </div>
     <div class="hud-row" id="hud-count"></div>
+    <div class="hud-row" id="hud-score"></div>
     <div class="hud-row" id="hud-rights"></div>
     <div class="hud-row" id="hud-events"></div>
     <div class="hud-row" id="hud-reject"></div>
@@ -95,6 +96,7 @@ hud.innerHTML = `
 
 const phaseEl = document.getElementById("hud-phase")!;
 const countEl = document.getElementById("hud-count")!;
+const scoreEl = document.getElementById("hud-score")!;
 const rightsEl = document.getElementById("hud-rights")!;
 const eventsEl = document.getElementById("hud-events")!;
 const rejectEl = document.getElementById("hud-reject")!;
@@ -118,6 +120,9 @@ function updateHud(): void {
   }
   phaseEl.textContent = text;
   countEl.textContent = `手数: ${state.turnCount}`;
+  // 取得済みの地の体積（m³）＝スコア。1マス=1m³（design.md「デジタルならではの解決」）。毎手更新。
+  const score = computeScore(def, state.cells);
+  scoreEl.textContent = `地: ● 黒 ${score.black} m³ ／ ○ 白 ${score.white} m³`;
   rightsEl.textContent = `権利 黒:${fmtRight(state.moveRights.black)} 白:${fmtRight(state.moveRights.white)}`;
   stoneBtn.classList.toggle("active", currentKind === "stone");
   pourBtn.classList.toggle("active", currentKind === "pour");

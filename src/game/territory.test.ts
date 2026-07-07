@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeTerritory } from "./territory";
+import { computeTerritory, computeScore } from "./territory";
 import { BOARD_SIZES } from "./boardDef";
 import { pointCount, indexOf } from "./coords";
 import type { BoardSizeId } from "./boardDef";
@@ -158,4 +158,39 @@ describe("computeTerritory — 値域・NaN無し・純粋性（3盤サイズ）
       expect(again.instability).toEqual(instability);
     });
   }
+});
+
+describe("computeScore — 取得済みの地の体積(m³・1マス=1m³)", () => {
+  it("空盤は 0/0（地なし）", () => {
+    expect(computeScore(D9, emptyCells())).toEqual({ black: 0, white: 0 });
+  });
+
+  it("黒で1マス囲うと black:1（外周を白石で中立化して純粋に1マスだけ地にする）", () => {
+    const cells = emptyCells();
+    // (2,2) を黒石の十字で囲う → そのポケットだけ黒の地。
+    set(cells, "9", 1, 2, 1);
+    set(cells, "9", 3, 2, 1);
+    set(cells, "9", 2, 1, 1);
+    set(cells, "9", 2, 3, 1);
+    // 白石を1つ置き、広い外周領域を「黒白両方に接する＝中立」にする（外周が黒の地に染まるのを防ぐ）。
+    set(cells, "9", 6, 6, -1);
+    expect(computeScore(D9, cells)).toEqual({ black: 1, white: 0 });
+  });
+
+  it("白で1マス囲うと white:1（外周を黒石で中立化）", () => {
+    const cells = emptyCells();
+    set(cells, "9", 1, 2, -1);
+    set(cells, "9", 3, 2, -1);
+    set(cells, "9", 2, 1, -1);
+    set(cells, "9", 2, 3, -1);
+    set(cells, "9", 6, 6, 1);
+    expect(computeScore(D9, cells)).toEqual({ black: 0, white: 1 });
+  });
+
+  it("囲いのない中立だけの盤は 0/0（黒白が開放空間に1つずつ・ポケットなし）", () => {
+    const cells = emptyCells();
+    set(cells, "9", 3, 3, 1);
+    set(cells, "9", 5, 5, -1);
+    expect(computeScore(D9, cells)).toEqual({ black: 0, white: 0 });
+  });
 });
