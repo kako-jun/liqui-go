@@ -61,7 +61,7 @@ const scene = new BoardScene(container, def);
  */
 function renderState(): void {
   scene.setState(state);
-  scene.setHeightField(computeHeightField(def, state.cells));
+  scene.setHeightField(computeHeightField(def, state.cells), state.cells);
 }
 
 renderState();

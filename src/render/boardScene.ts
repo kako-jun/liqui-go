@@ -47,7 +47,13 @@ const WOBBLE_PHASE_Z = 2.3;
 // 水面メッシュ全体の持ち上げ量。板の上面(y=0)との z-fighting を避け、格子線(0.01)より下に置く。
 const WATER_LIFT = 0.005;
 // 全体の不透明度（第一段は per-vertex alpha を使わず彩度ゲート＋一律 opacity で液感を出す）。
-const WATER_OPACITY = 0.85;
+const WATER_OPACITY = 0.5;
+
+// 石メッシュの半径（setState と共有）。石セルの水位をこの石頭の高さに合わせる。
+const STONE_RADIUS_FULL = 0.42; // |v|=1（固まった1石）
+const STONE_RADIUS_HALF = 0.3; // |v|=0.5（未固形の0.5石）
+// 石セルの水位を石頭(top)の何割にするか。1 未満で水面を石の冠より少し下げ、石を水面から出す。
+const WATER_STONE_FILL = 0.82;
 // ownership 色を presence（効きの総量）でゲートする閾。HeightField は presence を直接持たず
 // pressure(=total) を公開するので、単調な pressure に smoothstep を掛けてゲートする。
 // pressure がこの下限以下なら中立の濁り色、上限以上なら ownership 色を全掛けする。
@@ -338,7 +344,7 @@ export class BoardScene {
       const { x, y } = fromIndex(this.def, i);
       const isFull = Math.abs(v) === 1;
       const isBlack = v > 0;
-      const radius = isFull ? 0.42 : 0.3;
+      const radius = isFull ? STONE_RADIUS_FULL : STONE_RADIUS_HALF;
       const mat = new THREE.MeshStandardMaterial({
         color: isBlack ? COLORS.black : COLORS.white,
         roughness: isFull ? 0.5 : 0.2,
@@ -353,16 +359,19 @@ export class BoardScene {
   }
 
   /**
-   * 確定度 heightmap（#5 の純粋関数出力）を水面メッシュに反映する。
+   * 確定度 heightmap（#5 の純粋関数出力）と現盤面 cells を水面メッシュに反映する。
    * - 初回だけ格子ジオメトリ／マテリアル／メッシュを生成する。以降は頂点バッファ（position/color）
    *   だけを更新し、ジオメトリを作り直さない（毎手呼ばれてもリークしない）。
    * - 盤 [0,span]×[0,span]（span=lines-1）を各セル WATER_SUBDIV 分割した格子。頂点 (wx, y, wz) は
    *   board 単位（交点 (x,y) は盤ワールド (x, 上=Y, z=y) に対応するので wz が z 側＝盤の y 座標）。
-   * - 各頂点の height/ownership/pressure は囲む4交点の bilinear 補間でサンプルする。
-   * - 基底 Y = sampledHeight * HEIGHT_SCALE（凪=0・係争=盛り上がる）。波立ちは start() ループで足す。
-   * - 頂点色 = presence でゲートした ownership 色（弱効きは中立の濁り色へ抜く）。
+   * - 交点ごとに水位 level[] と波振幅 ampF[] を作る:
+   *   ・石セル(cells[i]≠0): level=石頭*WATER_STONE_FILL（水面を石の高さに合わせ冠を出す）・amp=0（凪）。
+   *   ・空点(cells[i]=0): level=height*HEIGHT_SCALE（係争度で持ち上がる）・amp=height*WOBBLE_AMP。
+   * - 各頂点の Y と波振幅は level/ampF を、色用の ownership/pressure は field を、囲む4交点の
+   *   bilinear 補間でサンプルする。頂点色 = presence(pressure) でゲートした ownership 色。
+   *   波立ちは start() ループで足す（時刻は render 側のみ）。level/ampF は毎手ローカルに作って捨てる。
    */
-  setHeightField(field: HeightField): void {
+  setHeightField(field: HeightField, cells: number[]): void {
     const lines = field.lines;
     const span = lines - 1;
     const segs = span * WATER_SUBDIV; // 1 軸あたりのセグメント数
@@ -407,6 +416,22 @@ export class BoardScene {
       this.scene.add(mesh);
     }
 
+    // 交点ごとの水位 level と波振幅 ampF を作る（sampleField が number[] を取るので Array で）。
+    // 石セルは石頭の高さで凪、空点だけ係争度で持ち上がって波立つ。毎手作り捨て（頂点バッファは別）。
+    const n = lines * lines;
+    const level = new Array<number>(n);
+    const ampF = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      const v = cells[i];
+      if (v !== 0) {
+        level[i] = this.stoneTop(v) * WATER_STONE_FILL; // 水面を石頭より少し下に
+        ampF[i] = 0; // 石セルは凪
+      } else {
+        level[i] = field.height[i] * HEIGHT_SCALE; // 係争度で持ち上がる
+        ampF[i] = field.height[i] * WOBBLE_AMP; // 凪(height0)=0・係争(height1)=最大
+      }
+    }
+
     const geom = this.waterGeometry;
     const posAttr = geom.getAttribute("position") as THREE.BufferAttribute;
     const colAttr = geom.getAttribute("color") as THREE.BufferAttribute;
@@ -422,16 +447,15 @@ export class BoardScene {
         const wx = col / WATER_SUBDIV;
         const vi = row * vpa + col;
 
-        const h = this.sampleField(field, field.height, wx, wz);
+        const y = this.sampleField(field, level, wx, wz); // 水位（石高さ or 係争度）
         const ow = this.sampleField(field, field.ownership, wx, wz);
         const pr = this.sampleField(field, field.pressure, wx, wz);
 
-        const y = h * HEIGHT_SCALE;
         positions[vi * 3] = wx;
         positions[vi * 3 + 1] = y;
         positions[vi * 3 + 2] = wz;
         baseY[vi] = y;
-        amp[vi] = h * WOBBLE_AMP; // 凪(height0)=0・係争(height1)=最大
+        amp[vi] = this.sampleField(field, ampF, wx, wz); // 石セル周りは 0（凪）
         phase[vi] = wx * WOBBLE_PHASE_X + wz * WOBBLE_PHASE_Z; // 座標から決定的に散らす
 
         // ownership[-1,1] を白↔黒流体で lerp: (ow+1)/2 が 0=白 / 1=黒。
@@ -451,6 +475,16 @@ export class BoardScene {
     // 基底位置で法線を張り直す（PBR ライティングで凹凸を陰影として読ませる）。
     // 波立ちの毎フレーム法線再計算まではしない（第一段・コスト回避）。
     geom.computeVertexNormals();
+  }
+
+  /**
+   * 石メッシュの頭（top）の Y。setState と同じ寸法から算出する。
+   * 石は半径 radius の球を scale.y=0.55 で平たくし position.y=radius*0.55 に置くので、
+   * top = position.y(radius*0.55) + 潰れた半径(radius*0.55) = radius*1.1。
+   */
+  private stoneTop(v: number): number {
+    const radius = Math.abs(v) === 1 ? STONE_RADIUS_FULL : STONE_RADIUS_HALF;
+    return radius * 1.1;
   }
 
   /**
