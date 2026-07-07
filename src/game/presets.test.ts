@@ -17,10 +17,10 @@ function preset(name: string): Preset {
 }
 
 describe("PRESETS — 全プリセットがシリアライズ可能な合法 state を返す（applyState を通る）", () => {
-  it("最低3つのプリセットがある（自然な中盤・不安定デモ・大きな黒地）", () => {
+  it("最低3つのプリセットがある（実戦の終盤・不安定デモ・大きな黒地）", () => {
     expect(PRESETS.length).toBeGreaterThanOrEqual(3);
     const names = PRESETS.map((p) => p.name);
-    expect(names).toContain("自然な中盤");
+    expect(names).toContain("実戦の終盤（9路）");
     expect(names).toContain("不安定デモ");
     expect(names).toContain("大きな黒地");
   });
@@ -51,35 +51,36 @@ describe("PRESETS — 全プリセットがシリアライズ可能な合法 sta
   }
 });
 
-describe("「自然な中盤」— 黒白の両方が地を持つ（スクショ用の要件）", () => {
-  const s = applyState(preset("自然な中盤").state());
+describe("「実戦の終盤（9路）」— 黒白の両方が地を持つ（スクショ用の要件・実棋譜由来）", () => {
+  const s = applyState(preset("実戦の終盤（9路）").state());
   const score = computeScore(D9, s.cells);
   const { territory, instability } = computeTerritory(D9, s.cells);
 
   it("computeScore は black>0 かつ white>0（両色に地がある）", () => {
     expect(score.black).toBeGreaterThan(0);
     expect(score.white).toBeGreaterThan(0);
-    // 設計値: 黒5m³（左上の池4＋右上の不安定水1）／白4m³（右下の池）。1マス=1m³。
-    expect(score).toEqual({ black: 5, white: 4 });
+    // 実棋譜（武宮正樹 vs 山田規三生・読売ミニ碁 2000-12-24 の終局図）由来: 黒15m³／白16m³。1マス=1m³。
+    expect(score).toEqual({ black: 15, white: 16 });
   });
 
-  it("左上は黒地の安定した池（(0,0)=黒地・instability 0＝海抜0の凪）", () => {
+  it("左上は黒地の安定した池（(0,0)=黒地・instability 0＝全1石の凪）", () => {
     expect(territory[indexOf(D9, 0, 0)]).toBe(1);
     expect(instability[indexOf(D9, 0, 0)]).toBe(0);
   });
 
-  it("右下は白地の安定した池（(8,8)=白地・instability 0）", () => {
-    expect(territory[indexOf(D9, 8, 8)]).toBe(-1);
-    expect(instability[indexOf(D9, 8, 8)]).toBe(0);
+  it("左下は白地の安定した池（(0,5)=白地・instability 0）", () => {
+    expect(territory[indexOf(D9, 0, 5)]).toBe(-1);
+    expect(instability[indexOf(D9, 0, 5)]).toBe(0);
   });
 
-  it("右上は0.5石で囲った不安定な水（(8,0)=黒地・instability 1＝高く揺れる）", () => {
-    expect(territory[indexOf(D9, 8, 0)]).toBe(1);
-    expect(instability[indexOf(D9, 8, 0)]).toBe(1);
+  it("実戦は全て1石なので水は全て確定（0.5石由来の不安定は無い＝全territoryが instability 0）", () => {
+    for (let i = 0; i < instability.length; i++) {
+      if (territory[i] !== 0) expect(instability[i]).toBe(0);
+    }
   });
 
-  it("中央は両色の柵が接する係争地帯で中立＝乾く（天元(4,4)は水なし）", () => {
-    expect(territory[indexOf(D9, 4, 4)]).toBe(0);
+  it("(3,2) は黒白の柵が両接する唯一のダメで中立＝乾く（水なし）", () => {
+    expect(territory[indexOf(D9, 3, 2)]).toBe(0);
   });
 });
 
