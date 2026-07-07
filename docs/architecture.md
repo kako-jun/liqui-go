@@ -68,7 +68,7 @@ design.md 表示仕様どおり「**石＝柵**」「**水＝取得済みの地*
 
 - 編集トグル ON でフェーズ機械（同時プロット/追加ポア/ムーブ）を止め、`onPointClick` が「ブラシ値でセルを直接塗る」分岐に入る。ブラシは 黒1(+1)/黒0.5(+0.5)/白1(-1)/白0.5(-0.5)/消す(0)。塗りは `state = paintCell(state, index, brush)` → `renderState()` で柵＋水＋標高をライブ再描画する。**編集中は占有・cooldown・合法手判定を無視**（自由配置）し、ホバー probe は `() => true`（常に緑）に差し替える。
 - 編集トグル OFF で `loadState(state)`（既存のプリセット/JSON 読込と同じリセット手順）を呼び、ラウンド機械を初手（黒 main）へ戻して**編集結果の cells のまま**プレイ再開する。`turnCount`/`cooldown`/`moveRights` は塗りでも据え置き（`paintCell` が保持）。
-- 局面 JSON のコピー（`serialize`→クリップボード）／貼付け読込（`window.prompt`→`deserialize`→`loadState`。不正は throw を try/catch して reject 表示）。
+- 局面 JSON のコピー（`serialize`→クリップボード）／貼付け読込（`window.prompt`→`deserialize`→`loadState`。不正は throw を try/catch して reject 表示）。`loadState` は適用前に境界検証（`importRejectReason`）を通し、盤サイズ非対応（UI は9路固定）・`turnCount`/`cooldown` の値域・`moveRights` の値域が不正なら適用せず reject 表示する（`applyState` は長さと cell 値域しか見ないため、13/19路の妥当JSONや負の turnCount 等でのサイレント破損を防ぐ）。この検証は全 `loadState` 経路（presets/空盤/編集OFF/JSON読込）を通る。
 - HUD の対局コントロール行とブラシ行は `hidden` 属性で出し分け、CSS に `#hud .hud-row[hidden]{display:none}` を併記して UA 規則の詳細度負けを防ぐ（`display:flex` を hidden で制御するときの必須対応）。
 
 ### 未実装（次段）

@@ -10,7 +10,7 @@
 // ルール③ ムーブ: 自分の 0.5 をクリック→隣接8マスの移動先を選ぶ（0.5のみ・1石不可）。
 //   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
 import { BOARD_SIZES, RULES } from "./game/boardDef";
-import { indexOf } from "./game/coords";
+import { indexOf, pointCount } from "./game/coords";
 import { computeTerritory } from "./game/territory";
 import { createInitialState, applyState, paintCell, serialize, deserialize } from "./game/state";
 import type { MoveRights, GameState } from "./game/state";
@@ -384,15 +384,32 @@ for (const b of brushDefs) {
 }
 
 // 局面をJSONでコピー: serialize(state) をクリップボードへ。失敗は reject 表示。
+// 非セキュアコンテキストでは navigator.clipboard が undefined で writeText が .then 前に
+// 同期 throw する（N1）。?. で undefined を検知し、同期例外は try/catch で拾って同じ reject に落とす。
 copyBtn.addEventListener("click", () => {
-  navigator.clipboard.writeText(serialize(state)).then(
-    () => {
-      eventsEl.textContent = "局面JSONをコピーしました";
-    },
-    () => {
+  try {
+    const p = navigator.clipboard?.writeText(serialize(state));
+    if (!p) {
       showRejectText("クリップボードにコピーできません");
-    },
-  );
+      return;
+    }
+    p.then(
+      () => {
+        // 成功メッセージは reject と違い自動で消えないので、他の eventsEl 表示（resolve 要約）を
+        // 誤って消さないよう、書いた文字列がそのままなら一定時間後にクリアする（N2）。
+        const msg = "局面JSONをコピーしました";
+        eventsEl.textContent = msg;
+        window.setTimeout(() => {
+          if (eventsEl.textContent === msg) eventsEl.textContent = "";
+        }, 1500);
+      },
+      () => {
+        showRejectText("クリップボードにコピーできません");
+      },
+    );
+  } catch {
+    showRejectText("クリップボードにコピーできません");
+  }
 });
 
 // JSONを貼って読込: prompt で貼らせ deserialize→loadState。不正は try/catch で reject 表示。
@@ -415,7 +432,43 @@ loadBtn.addEventListener("click", () => {
 // canned GameState を applyState でロードし、ラウンド機械を初手（黒 main）へ戻す。
 // resolveRound のリセット手順と同じ（プロット・追加ポア・ムーブ選択を全解除・probe/マーカーを
 // place に戻す）。UI 生成・配線は main.ts の責務（game/render に UI を混ぜない既存方針）。
+
+/**
+ * loadState に渡す局面の境界検証（S1/Q1・Issue #17）。applyState は cells/cooldown の「長さ」と
+ * cell 値域は見るが、盤サイズ互換・turnCount・cooldown 値域・moveRights 値域は見ない。UI は9路固定
+ * なので、13/19路の妥当JSONや負の turnCount 等をそのまま適用すると computeTerritory/描画が壊れる。
+ * 適用前にここで弾く（null=受理、非null=reject 表示文）。純粋関数（判定のみ・副作用なし）。
+ * presets(turnCount 8/20/50・cooldown全0・moveRights{0,0})／空盤／編集OFF(cooldown 0..koCooldownTurns・
+ * moveRights 0 or maxMoveRight)は必ず通過する（誤リジェクトを出さない）。cooldown に上限は設けない
+ * （整数かつ >=0 のみ＝エンジンの正当値を誤って弾かない）。
+ */
+function importRejectReason(next: GameState): string | null {
+  const nextDef = BOARD_SIZES[next.boardSizeId];
+  // UI は9路固定。盤サイズが違う（=交点数が違う）妥当JSONは描画/territory を壊すので非対応扱い。
+  if (!nextDef || pointCount(nextDef) !== pointCount(def)) {
+    return "この盤サイズには対応していません";
+  }
+  if (!Number.isInteger(next.turnCount) || next.turnCount < 0) {
+    return "局面JSONが不正です";
+  }
+  for (const v of next.cooldown) {
+    if (!Number.isInteger(v) || v < 0) return "局面JSONが不正です";
+  }
+  const okRight = (r: number): boolean => r === 0 || r === RULES.maxMoveRight;
+  if (!okRight(next.moveRights.black) || !okRight(next.moveRights.white)) {
+    return "局面JSONが不正です";
+  }
+  return null;
+}
+
 function loadState(next: GameState): void {
+  // 境界検証（S1/Q1）。全 loadState 経路（presets/空盤/編集OFF/JSON読込）が通る。不正/非対応は
+  // 適用せず現局面を保つ（サイレント破損防止）。applyState 前に弾く。
+  const reject = importRejectReason(next);
+  if (reject !== null) {
+    showRejectText(reject);
+    return;
+  }
   state = applyState(next); // 検証つきクローン（不正 cells は throw で弾く）
   // ラウンド機械リセット（resolveRound と同手順）。
   blackPlot = null;
