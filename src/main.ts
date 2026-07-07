@@ -11,6 +11,7 @@
 //   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
+import { computeHeightField } from "./game/heightmap";
 import { createInitialState } from "./game/state";
 import type { MoveRights } from "./game/state";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
@@ -52,7 +53,18 @@ const container = document.getElementById("app");
 if (!container) throw new Error("#app が無い");
 
 const scene = new BoardScene(container, def);
-scene.setState(state);
+
+/**
+ * state を描画へ反映する。石マーカー（setState）と液体地形 heightmap（setHeightField）を
+ * 同時に更新する。state が変わるたびに必ずこの1関数で描き直す（片方の更新漏れを防ぐ）。
+ * heightmap は純粋・軽量なので毎手 full recompute でよい（差分・キャッシュは持たない）。
+ */
+function renderState(): void {
+  scene.setState(state);
+  scene.setHeightField(computeHeightField(def, state.cells));
+}
+
+renderState();
 // 合法性 probe（緑/赤ホバー）。既定は place 判定（main の空点着手・extra の追加ポア共通）。
 // ムーブ元選択中は「そこからの合法着地か」に差し替える。
 // 開始 state 基準（両者とも同じ空きを狙えるのは仕様＝同点衝突）。
@@ -213,7 +225,7 @@ function resolveRound(): void {
   const r = resolveSimultaneous(def, state, blackPlot, whitePlot, blackExtra, whiteExtra);
   if (r.ok) {
     state = r.state;
-    scene.setState(state); // ← この瞬間に両手＋追加ポアが同時に盤へ乗る（伏せの解除）
+    renderState(); // ← この瞬間に両手＋追加ポアが同時に盤へ乗る（伏せの解除）＋水面も再計算
     showEvents(r.events, before, state.moveRights);
   } else {
     // 理論上起きない（プロット時に検証済み）が、来たら拒否表示。
