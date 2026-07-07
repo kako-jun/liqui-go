@@ -74,6 +74,33 @@ export function applyState(state: GameState): GameState {
 /** applyState の別名（呼び出し側の語彙に合わせる） */
 export const initWithState = applyState;
 
+/**
+ * 局面エディタ（自由配置）用の純粋ヘルパ。cells[index] を value に塗った検証済みクローンを返す。
+ * 内部で applyState を通すので、不正な value（5値以外）や cells 長ズレは throw で弾く。
+ * turnCount / cooldown / moveRights は据え置き（塗りでは触らない＝自由配置は占有・cooldown・
+ * 権利を無視する）。game 層の純粋関数（Three/DOM 非依存）なのでテスト可能。配線層 main.ts の
+ * 編集モードがセルクリックごとにこれを呼び、返った state を renderState で描き直す。
+ */
+export function paintCell(state: GameState, index: number, value: number): GameState {
+  const def = BOARD_SIZES[state.boardSizeId];
+  if (!def) throw new Error(`未知の boardSizeId: ${state.boardSizeId}`);
+  const n = pointCount(def);
+  if (!Number.isInteger(index) || index < 0 || index >= n) {
+    throw new RangeError(`paintCell: index ${index} が範囲外 (0..${n - 1})`);
+  }
+  const cells = state.cells.slice();
+  cells[index] = value;
+  // applyState が value の妥当性（isLegalCellValue）と全体整合を検証しつつクローンを返す。
+  return applyState({
+    version: 1,
+    boardSizeId: state.boardSizeId,
+    cells,
+    turnCount: state.turnCount,
+    cooldown: state.cooldown,
+    moveRights: state.moveRights,
+  });
+}
+
 /** JSON 文字列へ完全シリアライズ */
 export function serialize(state: GameState): string {
   return JSON.stringify(state);
