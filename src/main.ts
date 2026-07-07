@@ -11,8 +11,10 @@
 //   同時ムーブが同一着点なら tris（3点空く）、相互なら swap（0.5 入替）。
 import { BOARD_SIZES, RULES } from "./game/boardDef";
 import { indexOf } from "./game/coords";
-import { createInitialState } from "./game/state";
-import type { MoveRights } from "./game/state";
+import { computeTerritory } from "./game/territory";
+import { createInitialState, applyState } from "./game/state";
+import type { MoveRights, GameState } from "./game/state";
+import { PRESETS } from "./game/presets";
 import { placementRejection, resolveSimultaneous, moveRejection, extraRejection } from "./game/rules";
 import type { PlaceKind, Phenomenon, Player } from "./game/stones";
 import type { PlotRejection, PlotInput, Plot, ExtraInput, ResolveEvent } from "./game/rules";
@@ -52,7 +54,42 @@ const container = document.getElementById("app");
 if (!container) throw new Error("#app が無い");
 
 const scene = new BoardScene(container, def);
-scene.setState(state);
+
+// 直近の renderState で算出した territory（水＝地）。スコア表示はこれを数え直すだけで
+// computeTerritory を再実行しない（毎手の二重計算を避ける・N4）。renderState が唯一の更新点。
+let currentTerritory: number[] = [];
+
+/**
+ * state を描画へ反映する。石を「柵」（柱＋同色壁）として setState で描き直し、
+ * 一色の柵で囲い切った地を computeTerritory で検出して水（setTerritory）を溜める。
+ * state が変わるたびに必ずこの1関数で両方描き直す（片方の更新漏れを防ぐ）。
+ * territory は純粋・軽量なので毎手 full recompute でよい（差分・キャッシュは持たない）。
+ * 算出した territory は currentTerritory に控え、スコア表示（updateHud）が数え直しに再利用する。
+ * （標高＝不安定な地の盛り上がり・流れ出るアニメは次の増分。この段は囲い切った地＝低い池のみ。）
+ */
+function renderState(): void {
+  scene.setState(state);
+  const t = computeTerritory(def, state.cells);
+  currentTerritory = t.territory;
+  scene.setTerritory(t.territory, t.instability);
+}
+
+/**
+ * territory 配列（±1＝各色の地）から水量スコア（m³）を数える。1マス=1m³。
+ * computeTerritory を呼ばず既算出の territory を数えるだけ（毎手の二重計算回避・N4）。
+ * pure API の computeScore（territory.ts）と同値だが、HUD は再計算せずここで数える。
+ */
+function scoreFromTerritory(territory: number[]): { black: number; white: number } {
+  let black = 0;
+  let white = 0;
+  for (const v of territory) {
+    if (v === 1) black++;
+    else if (v === -1) white++;
+  }
+  return { black: black * RULES.cellCubicMeters, white: white * RULES.cellCubicMeters };
+}
+
+renderState();
 // 合法性 probe（緑/赤ホバー）。既定は place 判定（main の空点着手・extra の追加ポア共通）。
 // ムーブ元選択中は「そこからの合法着地か」に差し替える。
 // 開始 state 基準（両者とも同じ空きを狙えるのは仕様＝同点衝突）。
@@ -71,7 +108,9 @@ hud.innerHTML = `
       <button id="hud-pour" type="button">ポア</button>
       <button id="hud-pass" type="button">パス</button>
     </div>
+    <div class="hud-row" id="hud-presets"></div>
     <div class="hud-row" id="hud-count"></div>
+    <div class="hud-row" id="hud-score"></div>
     <div class="hud-row" id="hud-rights"></div>
     <div class="hud-row" id="hud-events"></div>
     <div class="hud-row" id="hud-reject"></div>
@@ -80,6 +119,7 @@ hud.innerHTML = `
 
 const phaseEl = document.getElementById("hud-phase")!;
 const countEl = document.getElementById("hud-count")!;
+const scoreEl = document.getElementById("hud-score")!;
 const rightsEl = document.getElementById("hud-rights")!;
 const eventsEl = document.getElementById("hud-events")!;
 const rejectEl = document.getElementById("hud-reject")!;
@@ -103,6 +143,10 @@ function updateHud(): void {
   }
   phaseEl.textContent = text;
   countEl.textContent = `手数: ${state.turnCount}`;
+  // 取得済みの地の体積（m³）＝スコア。1マス=1m³（design.md「デジタルならではの解決」）。
+  // renderState で算出済みの currentTerritory を数え直すだけ（territory 再計算はしない・N4）。
+  const score = scoreFromTerritory(currentTerritory);
+  scoreEl.textContent = `地: ● 黒 ${score.black} m³ ／ ○ 白 ${score.white} m³`;
   rightsEl.textContent = `権利 黒:${fmtRight(state.moveRights.black)} 白:${fmtRight(state.moveRights.white)}`;
   stoneBtn.classList.toggle("active", currentKind === "stone");
   pourBtn.classList.toggle("active", currentKind === "pour");
@@ -213,7 +257,7 @@ function resolveRound(): void {
   const r = resolveSimultaneous(def, state, blackPlot, whitePlot, blackExtra, whiteExtra);
   if (r.ok) {
     state = r.state;
-    scene.setState(state); // ← この瞬間に両手＋追加ポアが同時に盤へ乗る（伏せの解除）
+    renderState(); // ← この瞬間に両手＋追加ポアが同時に盤へ乗る（伏せの解除）
     showEvents(r.events, before, state.moveRights);
   } else {
     // 理論上起きない（プロット時に検証済み）が、来たら拒否表示。
@@ -256,6 +300,43 @@ passBtn.addEventListener("click", () => {
   }
   advanceTurn();
 });
+
+// ---- 局面プリセット（定番局面のワンクリック読み込み）----
+// canned GameState を applyState でロードし、ラウンド機械を初手（黒 main）へ戻す。
+// resolveRound のリセット手順と同じ（プロット・追加ポア・ムーブ選択を全解除・probe/マーカーを
+// place に戻す）。UI 生成・配線は main.ts の責務（game/render に UI を混ぜない既存方針）。
+function loadState(next: GameState): void {
+  state = applyState(next); // 検証つきクローン（不正 cells は throw で弾く）
+  // ラウンド機械リセット（resolveRound と同手順）。
+  blackPlot = null;
+  whitePlot = null;
+  blackExtra = null;
+  whiteExtra = null;
+  phase = "black-main";
+  pendingMoveFrom = null;
+  scene.setMoveSource(null);
+  scene.setLegalityProbe(placeProbe);
+  rejectEl.textContent = "";
+  eventsEl.textContent = "";
+  renderState(); // 柵＋水を描き直す（currentTerritory も更新）
+  updateHud(); // スコア・手数・権利・フェーズ表示を更新
+  scene.refreshHover(); // 盤が変わったのでホバー色（緑/赤）を即再評価
+}
+
+const presetsEl = document.getElementById("hud-presets")!;
+for (const p of PRESETS) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = p.name;
+  btn.addEventListener("click", () => loadState(p.state()));
+  presetsEl.appendChild(btn);
+}
+// 空盤に戻すボタン（プリセットと同じ経路でリセット）。
+const emptyBtn = document.createElement("button");
+emptyBtn.type = "button";
+emptyBtn.textContent = "空盤";
+emptyBtn.addEventListener("click", () => loadState(createInitialState("9")));
+presetsEl.appendChild(emptyBtn);
 
 // ---- クリック（ルール①同時プロット＋②追加ポア＋③ムーブ）----
 scene.onPointClick = (x, y) => {

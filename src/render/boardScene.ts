@@ -6,18 +6,25 @@ import type { BoardSizeDef } from "../game/boardDef";
 import type { GameState } from "../game/state";
 // inBounds の型・関数 import は「描画→game」の一方向依存なので規律に反しない。
 // 合法判定・commit は持ち込まない（それは配線層 main.ts の責務）。
-import { fromIndex, inBounds } from "../game/coords";
+import { fromIndex, indexOf, inBounds } from "../game/coords";
 
 const COLORS = {
   bg: 0x0a0e14,
   board: 0x123047,
   grid: 0x3f6f96,
   star: 0x6fb0e0,
-  black: 0x101820,
+  // 黒チームの柵色。暗い盤(0x123047)に沈まないよう視認できる濃紺グレーへ上げる（白柵とは十分別色）。
+  black: 0x2f4a63,
   white: 0xeef4fb,
   legal: 0x4fe08a, // ホバー標示（置ける）＝緑
   illegal: 0xe0544f, // ホバー標示（置けない）＝赤
   moveSource: 0xf5b942, // ムーブ元の選択マーカー＝琥珀（ホバーリングと別色）
+  // 柵（石＝境界線）の2色。黒石＝暗い柵色・白石＝明るい柵色（丸い碁石は描かない）。
+  // black/white を柵の柱・壁の両方に流用する。
+  // 取得済みの地（水）の2色。黒（+）の地＝暗い水色／白（−）の地＝明るい水色。
+  // 黒水も盤に沈まないよう見える青へ上げる（白水とは十分別色）。
+  waterBlack: 0x1c5f8c, // 黒（+）が囲い切った地の流体色
+  waterWhite: 0xd6eeff, // 白（−）が囲い切った地の流体色
 };
 
 // 交点平面の y（格子線と同じ高さ）。raycast で拾う水平面。
@@ -27,12 +34,59 @@ const SNAP_THRESHOLD = 0.5;
 // クリックとカメラドラッグの弁別しきい値（px）。これ未満の移動をクリックとみなす。
 const CLICK_MOVE_THRESHOLD_PX = 6;
 
+// ---- 柵（石＝境界線）レンダリングの定数（描画寄り。game/RULES には置かない）----
+// 盤は XZ 平面・Y 上。各石は交点に立つ縦の柱＋同色隣接（8近傍）を結ぶ連結線で描く（丸い碁石は描かない）。
+// 視覚文法（確定）: 色=黒/白／不透明=1石・半透明=0.5石／実線=両端1石・破線=どちらか0.5石。
+// 太さ・高さは全て一定（直交/斜め・実線/破線で高さや太さを変えない＝高さで意味を持たせない）。柵は静止。
+const FENCE_HEIGHT = 0.5; // 柱の高さ（board 単位）。全柱で一定。
+const POST_THICK = 0.12; // 柱の断面（正方形の一辺）。全柱で一定。
+// 連結線（同色隣接ペアを結ぶ板）。直交でも斜めでも太さ・高さは同じ。
+const LINK_THICK = 0.07; // 連結線の板厚。全線一定。
+const LINK_HEIGHT = FENCE_HEIGHT * 0.9; // 連結線の高さ。全線一定（柱をわずかに節として残す）。
+// 破線（連結線のどちらかの端点が0.5石のとき）。両端1石の実線は破線化しない。直交/斜め共通のダッシュ生成。
+const DASH_COUNT = 3; // 1連結線を何本の破線に割るか（間に隙間が空く）。
+const DASH_FILL = 0.55; // 各破線が区間長に占める割合（残りが隙間）。
+// 0.5石が絡む柵の不透明度（半透明）。1石だけの柵は 1.0（不透明）。
+const HALF_OPACITY = 0.5;
+
+// ---- 水（取得済みの地）レンダリングの定数 ----
+// 一色の柵で囲い切った空点＝その色の水を、海抜0付近の凪の池として平たいタイルで溜める。
+// 中立(0)・石セルは水なし（乾く）。この段では標高・流れは付けない（次段）。
+// 水面の基底高さ（board 単位）。確定地の揺らぎの谷（WATER_Y − AMP*BASE = 0.10 − 0.035 = 0.065）が
+// 板上面(0)・格子線(0.01)を確実に上回るよう底上げする（低すぎると谷が板に接触して地面に沈む）。
+const WATER_Y = 0.1;
+const WATER_TILE_HALF = 0.5; // 水タイルの半辺。交点を中心にセル境界まで＝隣接同色が連続して一つの池に見える。
+const WATER_OPACITY = 0.5; // 水面の不透明度（半透明・下の格子が薄く透ける）。
+// 不安定な地は高く盛り上がる（design.md「薄い囲み=不安定=高い/今にも流れ出す」）。
+// instability∈[0,1] を持ち上げ量へ写す。柵の高さ(0.5)を超えないよう
+// WATER_Y + WATER_RISE + WATER_WOBBLE_AMP*(WATER_WOBBLE_BASE+1) < 0.5 に収める。
+// 底上げした WATER_Y(0.10) に合わせて縮小: 0.10 + 0.27 + 0.07*1.5 = 0.475 < 0.5 で柵を超えない。
+const WATER_RISE = 0.27; // instability=1 の地の追加標高。基底 WATER_Y からの持ち上げ。
+// 液体感の揺らぎ。時刻は render の clock、位相は頂点座標から決定的に（Math.random/Date 不使用）。
+// 凪の池でも水は生きて動く: 振幅は instability=0 でも WATER_WOBBLE_BASE ぶんは揺れ、
+// 不安定なほど強く揺れる（確定地=0.5倍のゆったり／不安定地=1.5倍の強い波）。
+const WATER_WOBBLE_FREQ = 1.4; // 揺らぎの角速度（rad/s 相当）。
+const WATER_WOBBLE_AMP = 0.07; // 振幅の基準（実効振幅 = AMP*(BASE+instability)、instability=1 で最大 AMP*1.5）。
+const WATER_WOBBLE_BASE = 0.5; // instability=0（確定地）でも凍らせない下駄。凪の池も 0.5 倍でゆったり揺れる。
+const WATER_WOBBLE_PHASE_X = 1.3;
+const WATER_WOBBLE_PHASE_Z = 2.1;
+
 export class BoardScene {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly controls: OrbitControls;
   private readonly stoneGroup = new THREE.Group();
+  // 取得済みの地（水）の専用 Group。setTerritory で毎手 clear→描き直す（geometry/material dispose）。
+  private readonly waterGroup = new THREE.Group();
+  // 水面の揺らぎ用の頂点別データ（setTerritory で作り直す）。start() の RAF で Y を毎フレーム更新する。
+  // baseY=不安定さで持ち上げた静止 Y、amp=揺らぎ振幅(=AMP*(BASE+instability)・確定地でも下駄で>0)、phase=頂点座標由来の決定的位相。
+  private waterAnim: {
+    posAttr: THREE.BufferAttribute;
+    baseY: Float32Array;
+    amp: Float32Array;
+    phase: Float32Array;
+  }[] = [];
   private readonly def: BoardSizeDef;
   private running = false;
   private readonly onResize = () => this.resize();
@@ -65,6 +119,9 @@ export class BoardScene {
   // 判定は持ち込まない。main.ts が座標を渡して出す/隠す。
   private readonly moveSourceRing: THREE.Mesh;
   private readonly moveSourceRingMat: THREE.MeshBasicMaterial;
+
+  // 時刻は render 側だけが持つ（game は純粋・時刻を持てない）。水面の揺らぎに使う（柵は静止）。
+  private readonly clock = new THREE.Clock();
 
   private readonly onPointerDown = (e: PointerEvent) => this.handlePointerDown(e);
   private readonly onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
@@ -101,6 +158,7 @@ export class BoardScene {
     this.scene.add(dir);
 
     this.buildBoard();
+    this.scene.add(this.waterGroup); // 水（地）は柵の下に溜まる。先に足す。
     this.scene.add(this.stoneGroup);
 
     // ホバー標示リング（薄い水平トーラス）。初期は隠す。
@@ -287,27 +345,238 @@ export class BoardScene {
     }
   }
 
-  /** GameState の cells を石マーカーとして描き直す。 */
+  /**
+   * GameState の cells を「柵」（柱＋同色壁）として描き直す。丸い碁石は描かない。
+   * 各交点に立つ柱を置き、同色の直交隣接は実線壁、同色の斜め隣接は隙間ある斜め線で繋ぐ。
+   * 二重描画を避けるため、壁は各石から +x/+z（直交）と +x+z/+x−z（斜め）方向の隣だけ見る。
+   * 1石＝不透明の硬い柵／0.5石が絡む柵＝半透明で揺らぐ壊れやすい柵。
+   */
   setState(state: GameState): void {
-    this.stoneGroup.clear();
-    for (let i = 0; i < state.cells.length; i++) {
-      const v = state.cells[i];
+    this.clearStones();
+    const cells = state.cells;
+    for (let i = 0; i < cells.length; i++) {
+      const v = cells[i];
       if (v === 0) continue;
       const { x, y } = fromIndex(this.def, i);
-      const isFull = Math.abs(v) === 1;
       const isBlack = v > 0;
-      const radius = isFull ? 0.42 : 0.3;
-      const mat = new THREE.MeshStandardMaterial({
-        color: isBlack ? COLORS.black : COLORS.white,
-        roughness: isFull ? 0.5 : 0.2,
-        transparent: !isFull, // 0.5石はまだ固まっていない＝半透明
-        opacity: isFull ? 1 : 0.55,
-      });
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 16), mat);
-      mesh.scale.y = 0.55; // 碁石らしく平たく
-      mesh.position.set(x, radius * 0.55, y);
-      this.stoneGroup.add(mesh);
+      const isFull = Math.abs(v) === 1;
+      // 柵ノード（各石）＝交点に立つ縦の柱。
+      this.addPost(x, y, isBlack, isFull);
+      // 同色隣接（8近傍）を連結線で結ぶ。二重描画回避で +x/+z/+x+z/+x−z の4方向だけ見る。
+      // 直交/斜めは幾何が違うだけで、実線/破線・不透明/半透明は端点の石種(1/0.5)だけで決まる。
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y); // 直交 +x
+      this.addLinkIfSameColor(cells, x, y, v, x, y + 1); // 直交 +z
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y + 1); // 斜め +x+z
+      this.addLinkIfSameColor(cells, x, y, v, x + 1, y - 1); // 斜め +x−z
     }
+  }
+
+  /** stoneGroup の子（柵メッシュ）のジオメトリ/マテリアルを解放してから空にする（毎手のリーク防止）。 */
+  private clearStones(): void {
+    for (const child of this.stoneGroup.children) {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const m = child.material;
+        if (Array.isArray(m)) for (const mm of m) mm.dispose();
+        else m.dispose();
+      }
+    }
+    this.stoneGroup.clear();
+  }
+
+  /**
+   * 取得済みの地（territory）を水として溜める。territory[i]/instability[i] は computeTerritory の出力:
+   * territory=+1黒の地 / −1白の地 / 0中立（乾く）・石セル。±1 の空点だけに半透明の平たい水面タイルを置く。
+   * 基底 Y は instability で持ち上げる（確定地=海抜0の凪／不安定=高く今にも流れ出す）。隣接する同色タイルは
+   * セル境界で連続して一つの池に見える。黒/白ごとに1メッシュへマージ（描画コスト・continuity）。
+   * 揺らぎは start() の RAF で足す（確定地も下駄でゆったり揺れ、不安定なほど強い）。毎手 clear→描き直す（リーク防止）。
+   */
+  setTerritory(territory: number[], instability: number[]): void {
+    this.clearWater();
+    this.addWaterMesh(territory, instability, 1); // 黒（+）の地＝暗い水色
+    this.addWaterMesh(territory, instability, -1); // 白（−）の地＝明るい水色
+  }
+
+  /** territory の sign(+1黒/−1白) のセルを1枚のマージ水面メッシュにして waterGroup へ足す。 */
+  private addWaterMesh(territory: number[], instability: number[], sign: number): void {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const baseYs: number[] = [];
+    const amps: number[] = [];
+    const phases: number[] = [];
+    let quads = 0;
+    for (let i = 0; i < territory.length; i++) {
+      if (territory[i] !== sign) continue;
+      const { x, y } = fromIndex(this.def, i);
+      const inst = instability[i];
+      const baseY = WATER_Y + inst * WATER_RISE; // 不安定なほど高い（凪 inst0 は海抜0付近）
+      // 実効振幅は下駄(BASE)＋instability。確定地(inst0)も BASE ぶんゆったり揺れ、凍らない。
+      const amp = WATER_WOBBLE_AMP * (WATER_WOBBLE_BASE + inst);
+      const x0 = x - WATER_TILE_HALF;
+      const x1 = x + WATER_TILE_HALF;
+      const z0 = y - WATER_TILE_HALF;
+      const z1 = y + WATER_TILE_HALF;
+      // 交点 (x,y) を中心に ±half の水平タイル（Y=baseY）。4頂点 → 2三角形。角の順は (x0,z0)(x1,z0)(x1,z1)(x0,z1)。
+      const corners: ReadonlyArray<readonly [number, number]> = [
+        [x0, z0],
+        [x1, z0],
+        [x1, z1],
+        [x0, z1],
+      ];
+      for (const [cx, cz] of corners) {
+        positions.push(cx, baseY, cz);
+        baseYs.push(baseY);
+        amps.push(amp);
+        phases.push(cx * WATER_WOBBLE_PHASE_X + cz * WATER_WOBBLE_PHASE_Z); // 座標から決定的
+      }
+      const b = quads * 4;
+      // 巻き順は法線が +Y（上）を向くように（XZ 平面・Y 上）。
+      indices.push(b, b + 2, b + 1, b, b + 3, b + 2);
+      quads++;
+    }
+    if (quads === 0) return; // その色の地が無ければメッシュを作らない（空盤＝水なし）
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+      color: sign > 0 ? COLORS.waterBlack : COLORS.waterWhite,
+      transparent: true,
+      opacity: WATER_OPACITY,
+      roughness: 0.15,
+      metalness: 0,
+      side: THREE.DoubleSide,
+    });
+    this.waterGroup.add(new THREE.Mesh(geom, mat));
+    // 揺らぎ用の頂点データを登録（RAF で Y を更新する）。
+    const posAttr = geom.getAttribute("position") as THREE.BufferAttribute;
+    this.waterAnim.push({
+      posAttr,
+      baseY: new Float32Array(baseYs),
+      amp: new Float32Array(amps),
+      phase: new Float32Array(phases),
+    });
+  }
+
+  /**
+   * 水面の揺らぎ。時刻 t を read して各頂点 Y を baseY + amp*sin(t*FREQ + phase) に更新する。
+   * amp は下駄(BASE)ぶん常に>0＝全頂点が揺れる（確定地はゆったり・不安定は強く）。
+   * amp===0 ガードは残すが実質発火しない。game は時刻を持てないので揺らぎは render のここだけで足す。
+   */
+  private animateWater(): void {
+    if (this.waterAnim.length === 0) return;
+    const t = this.clock.getElapsedTime();
+    for (const w of this.waterAnim) {
+      const positions = w.posAttr.array as Float32Array;
+      let moved = false;
+      for (let vi = 0; vi < w.baseY.length; vi++) {
+        if (w.amp[vi] === 0) continue; // 下駄で amp>0 のため実質無効（保険として残す）
+        positions[vi * 3 + 1] = w.baseY[vi] + w.amp[vi] * Math.sin(t * WATER_WOBBLE_FREQ + w.phase[vi]);
+        moved = true;
+      }
+      if (moved) w.posAttr.needsUpdate = true;
+    }
+  }
+
+  /** waterGroup の子（水面メッシュ）のジオメトリ/マテリアルを解放してから空にする（毎手のリーク防止）。 */
+  private clearWater(): void {
+    for (const child of this.waterGroup.children) {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const m = child.material;
+        if (Array.isArray(m)) for (const mm of m) mm.dispose();
+        else m.dispose();
+      }
+    }
+    this.waterGroup.clear();
+    this.waterAnim = [];
+  }
+
+  /** 柵の柱/連結線用マテリアル。opacity=1.0＝不透明の硬い柵（1石だけ）／0.5＝半透明（0.5石が絡む）。 */
+  private fenceMaterial(isBlack: boolean, opacity: number): THREE.MeshStandardMaterial {
+    const solid = opacity >= 1;
+    return new THREE.MeshStandardMaterial({
+      color: isBlack ? COLORS.black : COLORS.white,
+      roughness: solid ? 0.5 : 0.25,
+      metalness: 0,
+      transparent: !solid,
+      opacity,
+    });
+  }
+
+  /** 柵ノード（各石）＝交点 (x,z) に立つ縦の柱。1石=不透明／0.5石=半透明。太さ・高さは全柱一定・静止。 */
+  private addPost(x: number, z: number, isBlack: boolean, isFull: boolean): void {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(POST_THICK, FENCE_HEIGHT, POST_THICK),
+      this.fenceMaterial(isBlack, isFull ? 1 : HALF_OPACITY),
+    );
+    mesh.position.set(x, FENCE_HEIGHT / 2, z);
+    this.stoneGroup.add(mesh);
+  }
+
+  /**
+   * (x,z) の石 v と隣 (nx,nz) が同色なら連結線を引く。異色・空点・盤外は引かない。
+   * 視覚文法（確定）: 両端とも1石→実線・不透明／どちらかが0.5石→破線・半透明。直交/斜めは無関係。
+   */
+  private addLinkIfSameColor(cells: number[], x: number, z: number, v: number, nx: number, nz: number): void {
+    if (!inBounds(this.def, nx, nz)) return;
+    const nv = cells[indexOf(this.def, nx, nz)];
+    if (nv === 0) return;
+    if (v > 0 !== nv > 0) return; // 異色は繋がない
+    const isBlack = v > 0;
+    // 石種だけで決める: 両端1石なら実線・不透明、どちらか0.5なら破線・半透明。
+    const solid = Math.abs(v) === 1 && Math.abs(nv) === 1;
+    this.addLink(x, z, nx, nz, isBlack, !solid, solid ? 1 : HALF_OPACITY);
+  }
+
+  /**
+   * 同色隣接ペア (ax,az)-(bx,bz) を連結線で結ぶ。太さ・高さは全線一定（直交/斜めで変えない）。
+   * isDashed=false なら全長1本の実線、true なら DASH_COUNT 本の破線（間に隙間＝0.5が絡むことを表す）。
+   * 破線生成は直交・斜め共通（幾何は端点座標に沿う）。opacity は 1.0（不透明）か HALF_OPACITY（半透明）。
+   */
+  private addLink(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    isBlack: boolean,
+    isDashed: boolean,
+    opacity: number,
+  ): void {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const fullLen = Math.hypot(dx, dz); // 直交=1 / 斜め=√2
+    const angleY = Math.atan2(-dz, dx); // local +X を (dx,0,dz) 方向へ
+    if (!isDashed) {
+      // 実線: 全長1本の板を中点に置く。
+      this.addBar(ax + dx / 2, az + dz / 2, fullLen, angleY, isBlack, opacity);
+      return;
+    }
+    // 破線: DASH_COUNT 本の短い板を等間隔に（間に隙間）。
+    const dashLen = (fullLen / DASH_COUNT) * DASH_FILL;
+    for (let k = 0; k < DASH_COUNT; k++) {
+      const t = (k + 0.5) / DASH_COUNT; // 区間中央
+      this.addBar(ax + dx * t, az + dz * t, dashLen, angleY, isBlack, opacity);
+    }
+  }
+
+  /** 連結線1本ぶんの板（Box）を中心 (cx,cz)・長さ len・向き angleY で置く。高さ・厚さは全線一定。 */
+  private addBar(
+    cx: number,
+    cz: number,
+    len: number,
+    angleY: number,
+    isBlack: boolean,
+    opacity: number,
+  ): void {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(len, LINK_HEIGHT, LINK_THICK),
+      this.fenceMaterial(isBlack, opacity),
+    );
+    mesh.position.set(cx, LINK_HEIGHT / 2, cz);
+    mesh.rotation.y = angleY;
+    this.stoneGroup.add(mesh);
   }
 
   start(): void {
@@ -316,6 +585,7 @@ export class BoardScene {
     const loop = () => {
       if (!this.running) return;
       this.controls.update();
+      this.animateWater(); // 不安定な地の水面の揺らぎを毎フレーム更新（柵は静止）
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
@@ -346,6 +616,9 @@ export class BoardScene {
     // 選択マーカーのジオメトリ/マテリアルを明示解放（renderer.dispose では解放されない）。
     this.moveSourceRing.geometry.dispose();
     this.moveSourceRingMat.dispose();
+    // 柵・水メッシュのジオメトリ/マテリアルも明示解放（renderer.dispose では解放されない）。
+    this.clearStones();
+    this.clearWater();
     this.renderer.dispose();
     el.remove();
   }
