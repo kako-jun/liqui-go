@@ -15,7 +15,7 @@ src/
 │   ├── rules.test.ts  合法手判定・cooldown 遷移・同時着手・純粋性の境界値テスト
 │   ├── territory.ts   取得済みの地の検出（純粋・render非依存）: computeTerritory（囲われた地＋不安定さ）/ computeScore（水量=m³=スコア）
 │   ├── territory.test.ts  地の判定・不安定さ・値域・純粋性の境界値テスト
-│   └── state.ts       実行時状態 GameState（完全シリアライズ可能）
+│   └── state.ts       実行時状態 GameState（完全シリアライズ可能）: createInitialState / applyState / serialize / deserialize / paintCell（局面エディタ用・cells[i]=value の検証済みクローン。turnCount/cooldown/moveRights は据え置き）
 └── render/          描画層。GameState を読んで描くだけ
     └── boardScene.ts  Three.js シーン構築・盤/格子/星・石＝柵（setState）・水＝取得済みの地（setTerritory）・raycast 交点ピック（onPointClick / setLegalityProbe / setMoveSource / ホバー標示）
 ```
@@ -61,6 +61,15 @@ design.md 表示仕様どおり「**石＝柵**」「**水＝取得済みの地*
 ### 配線（`main.ts`）
 
 `renderState()` が state 変化ごとに `computeTerritory(def, state.cells)` を呼び、`setState`（柵）＋ `setTerritory(t.territory, t.instability)`（水）を反映する（毎手 full recompute。純粋・軽量なので差分は持たない）。
+
+### 局面エディタ（自由配置・#17）
+
+対局手順（伏せ→同時プロット→フェーズ機械）を経ずに任意局面を組む編集モード。配線層（`main.ts`）＋ HUD（DOM/CSS）＋ 純粋ヘルパ `paintCell`（`state.ts`）だけで実現し、`game/` のルール・描画層 `boardScene.ts` は変更しない。
+
+- 編集トグル ON でフェーズ機械（同時プロット/追加ポア/ムーブ）を止め、`onPointClick` が「ブラシ値でセルを直接塗る」分岐に入る。ブラシは 黒1(+1)/黒0.5(+0.5)/白1(-1)/白0.5(-0.5)/消す(0)。塗りは `state = paintCell(state, index, brush)` → `renderState()` で柵＋水＋標高をライブ再描画する。**編集中は占有・cooldown・合法手判定を無視**（自由配置）し、ホバー probe は `() => true`（常に緑）に差し替える。
+- 編集トグル OFF で `loadState(state)`（既存のプリセット/JSON 読込と同じリセット手順）を呼び、ラウンド機械を初手（黒 main）へ戻して**編集結果の cells のまま**プレイ再開する。`turnCount`/`cooldown`/`moveRights` は塗りでも据え置き（`paintCell` が保持）。
+- 局面 JSON のコピー（`serialize`→クリップボード）／貼付け読込（`window.prompt`→`deserialize`→`loadState`）。検証は2層に分ける: (a) **UI 非依存の GameState 不変条件**（`turnCount` 非負整数・`cooldown` 各要素 非負整数・`moveRights` 各色 `0` か `RULES.maxMoveRight`）は `applyState`（game層）が cell 値・長さ検証の隣で `throw` する（deserialize/applyState を通る全経路 = untrusted JSON でも締まる。unit テストで固定）。(b) **配線層固有の制約**（UI は9路固定＝盤サイズ非対応）だけ `main.ts` の `importRejectReason` が見て reject 表示する。`loadState` は `importRejectReason` で盤サイズを弾き、`applyState` を try/catch で囲んで throw（値域・長さ・不正 cell）を `reject 表示`に落として現局面を保つ。全 `loadState` 経路（presets/空盤/編集OFF/JSON読込）が安全（13/19路の妥当JSONや負の turnCount 等のサイレント破損を防ぐ）。
+- HUD の対局コントロール行とブラシ行は `hidden` 属性で出し分け、CSS に `#hud .hud-row[hidden]{display:none}` を併記して UA 規則の詳細度負けを防ぐ（`display:flex` を hidden で制御するときの必須対応）。
 
 ### 未実装（次段）
 

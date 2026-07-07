@@ -52,6 +52,14 @@
         gap: 6px;
         align-items: center;
         min-height: 16px;
+        flex-wrap: wrap;
+      }
+      /* hidden 属性で行を出し分けする（編集モードのブラシ行・対局コントロール行）。
+         UA の [hidden]{display:none} は詳細度(0,0,0,1)で #hud .hud-row(0,1,0,1) に
+         負けて効かない。ここで #hud .hud-row[hidden](0,1,0,2) を併記して確実に隠す
+         （CLAUDE.md 規律: display:flex を hidden で制御するときは必ずこの規則を書く）。 */
+      #hud .hud-row[hidden] {
+        display: none;
       }
       #hud button {
         font: inherit;
