@@ -2,7 +2,7 @@
 // （game profile 規律6）。描画層（src/render）はこの state を読むだけで、
 // 任意局面から起動・再開できる。
 import type { BoardSizeId } from "./boardDef";
-import { BOARD_SIZES } from "./boardDef";
+import { BOARD_SIZES, RULES } from "./boardDef";
 import { pointCount } from "./coords";
 import { isLegalCellValue } from "./stones";
 
@@ -59,6 +59,24 @@ export function applyState(state: GameState): GameState {
   }
   for (const v of state.cells) {
     if (!isLegalCellValue(v)) throw new Error(`不正なセル値: ${v}`);
+  }
+  // 値域不変条件（UI 非依存の GameState 不変条件）。deserialize/applyState を通る全経路
+  // （untrusted JSON 含む）でここが締める。内部生成（createInitialState・presets・rules の
+  // resolve 出力）は全て正当値なので誤 throw しない。
+  // turnCount: 非負整数（同時プロットを1と数える手数）。
+  if (!Number.isInteger(state.turnCount) || state.turnCount < 0) {
+    throw new Error(`不正な turnCount: ${state.turnCount}`);
+  }
+  // cooldown: 各点の残クールダウンは非負整数（上限は設けない＝エンジンの正当値を弾かない）。
+  for (const v of state.cooldown) {
+    if (!Number.isInteger(v) || v < 0) throw new Error(`不正な cooldown 値: ${v}`);
+  }
+  // moveRights: 各色 0（未取得）か RULES.maxMoveRight（1.5手の権利）のいずれか（ルール②）。
+  const okRight = (r: number): boolean => r === 0 || r === RULES.maxMoveRight;
+  if (!okRight(state.moveRights.black) || !okRight(state.moveRights.white)) {
+    throw new Error(
+      `不正な moveRights: black=${state.moveRights.black}, white=${state.moveRights.white}`,
+    );
   }
   // クローンして返す（呼び出し側の参照と切り離す）
   return {

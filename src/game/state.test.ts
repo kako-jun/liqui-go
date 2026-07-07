@@ -9,7 +9,7 @@ import {
   type GameState,
 } from "./state";
 import { computeTerritory, computeScore } from "./territory";
-import { BOARD_SIZES } from "./boardDef";
+import { BOARD_SIZES, RULES } from "./boardDef";
 import { pointCount, indexOf } from "./coords";
 
 const N9 = pointCount(BOARD_SIZES["9"]); // 81
@@ -156,6 +156,77 @@ describe("applyState — 不正 state を弾く", () => {
     const bad = validState9();
     bad.cells[10] = NaN;
     expect(() => applyState(bad)).toThrow(/不正なセル値/);
+  });
+});
+
+describe("applyState — 値域不変条件（UI 非依存・game層で締める）", () => {
+  // turnCount/cooldown/moveRights の値域は GameState の不変条件。deserialize/applyState を通る
+  // 全経路（untrusted JSON 含む）で締まることを固定する。throw はメッセージ正規表現で分岐固定。
+  it("負の turnCount（−1）は throw /turnCount/", () => {
+    const bad = validState9();
+    bad.turnCount = -1;
+    expect(() => applyState(bad)).toThrow(/turnCount/);
+  });
+
+  it("非整数 turnCount（1.5）は throw /turnCount/", () => {
+    const bad = validState9();
+    bad.turnCount = 1.5;
+    expect(() => applyState(bad)).toThrow(/turnCount/);
+  });
+
+  it("負の cooldown 要素（−1）は throw /cooldown 値/（長さ検証 /cooldown 長/ ではない）", () => {
+    const bad = validState9();
+    bad.cooldown[3] = -1;
+    expect(() => applyState(bad)).toThrow(/cooldown 値/);
+    expect(() => applyState(bad)).not.toThrow(/cooldown 長/);
+  });
+
+  it("非整数 cooldown 要素（0.5）は throw /cooldown 値/", () => {
+    const bad = validState9();
+    bad.cooldown[3] = 0.5;
+    expect(() => applyState(bad)).toThrow(/cooldown 値/);
+  });
+
+  it("moveRights.black が 0/maxMoveRight 以外（0.7）は throw /moveRights/", () => {
+    const bad = validState9();
+    bad.moveRights.black = 0.7;
+    expect(() => applyState(bad)).toThrow(/moveRights/);
+  });
+
+  it("moveRights.black が 1（1.5でも0でもない整数）は throw /moveRights/", () => {
+    const bad = validState9();
+    bad.moveRights.black = 1;
+    expect(() => applyState(bad)).toThrow(/moveRights/);
+  });
+
+  it("moveRights.white が 0/maxMoveRight 以外（0.7）は throw /moveRights/", () => {
+    const bad = validState9();
+    bad.moveRights.white = 0.7;
+    expect(() => applyState(bad)).toThrow(/moveRights/);
+  });
+
+  it("deserialize 経由（applyState を呼ぶ）でも負の turnCount は同じ throw /turnCount/", () => {
+    const badJson = JSON.stringify({ ...validState9(), turnCount: -1 });
+    expect(() => deserialize(badJson)).toThrow(/turnCount/);
+  });
+
+  it("正常系: turnCount 0 と正の整数・cooldown 全0・moveRights の 3 正当形は throw しない", () => {
+    // turnCount 0 と正の整数
+    expect(() => applyState({ ...validState9(), turnCount: 0 })).not.toThrow();
+    expect(() => applyState({ ...validState9(), turnCount: 50 })).not.toThrow();
+    // moveRights の 3 正当形 {0,0} / {0,maxMoveRight} / {maxMoveRight,maxMoveRight}
+    const withRights = (black: number, white: number): GameState => {
+      const s = validState9();
+      s.moveRights = { black, white };
+      return s;
+    };
+    expect(() => applyState(withRights(0, 0))).not.toThrow();
+    expect(() => applyState(withRights(0, RULES.maxMoveRight))).not.toThrow();
+    expect(() => applyState(withRights(RULES.maxMoveRight, RULES.maxMoveRight))).not.toThrow();
+    // cooldown 全0（createInitialState 既定）と非0の非負整数（コウ相当の残ターン）
+    const withCooldown = validState9();
+    withCooldown.cooldown[0] = RULES.koCooldownTurns; // 整数の正当値
+    expect(() => applyState(withCooldown)).not.toThrow();
   });
 });
 

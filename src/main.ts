@@ -434,13 +434,10 @@ loadBtn.addEventListener("click", () => {
 // place に戻す）。UI 生成・配線は main.ts の責務（game/render に UI を混ぜない既存方針）。
 
 /**
- * loadState に渡す局面の境界検証（S1/Q1・Issue #17）。applyState は cells/cooldown の「長さ」と
- * cell 値域は見るが、盤サイズ互換・turnCount・cooldown 値域・moveRights 値域は見ない。UI は9路固定
- * なので、13/19路の妥当JSONや負の turnCount 等をそのまま適用すると computeTerritory/描画が壊れる。
- * 適用前にここで弾く（null=受理、非null=reject 表示文）。純粋関数（判定のみ・副作用なし）。
- * presets(turnCount 8/20/50・cooldown全0・moveRights{0,0})／空盤／編集OFF(cooldown 0..koCooldownTurns・
- * moveRights 0 or maxMoveRight)は必ず通過する（誤リジェクトを出さない）。cooldown に上限は設けない
- * （整数かつ >=0 のみ＝エンジンの正当値を誤って弾かない）。
+ * loadState に渡す局面の「配線層固有」の境界検証（Issue #17）。UI が9路固定という main.ts 固有の
+ * 制約だけをここで見る（盤サイズ非対応）。turnCount/cooldown/moveRights の値域は UI 非依存の
+ * GameState 不変条件なので applyState（game層）が締める（そちらは unit テストで固定）。
+ * null=受理、非null=reject 表示文。純粋関数（判定のみ・副作用なし）。
  */
 function importRejectReason(next: GameState): string | null {
   const nextDef = BOARD_SIZES[next.boardSizeId];
@@ -448,28 +445,26 @@ function importRejectReason(next: GameState): string | null {
   if (!nextDef || pointCount(nextDef) !== pointCount(def)) {
     return "この盤サイズには対応していません";
   }
-  if (!Number.isInteger(next.turnCount) || next.turnCount < 0) {
-    return "局面JSONが不正です";
-  }
-  for (const v of next.cooldown) {
-    if (!Number.isInteger(v) || v < 0) return "局面JSONが不正です";
-  }
-  const okRight = (r: number): boolean => r === 0 || r === RULES.maxMoveRight;
-  if (!okRight(next.moveRights.black) || !okRight(next.moveRights.white)) {
-    return "局面JSONが不正です";
-  }
   return null;
 }
 
 function loadState(next: GameState): void {
-  // 境界検証（S1/Q1）。全 loadState 経路（presets/空盤/編集OFF/JSON読込）が通る。不正/非対応は
-  // 適用せず現局面を保つ（サイレント破損防止）。applyState 前に弾く。
+  // 配線層固有の検証（盤サイズ非対応）。全 loadState 経路（presets/空盤/編集OFF/JSON読込）が通る。
   const reject = importRejectReason(next);
   if (reject !== null) {
     showRejectText(reject);
+    return; // 非対応は適用せず現局面を保つ（サイレント破損防止）
+  }
+  // 値域・cells 長・不正値は applyState（game層）が throw する。catch して reject に落とし、
+  // 現局面を保つ（untrusted JSON でも安全）。内部生成（presets/空盤/編集OFF）は正当値なので throw しない。
+  let applied: GameState;
+  try {
+    applied = applyState(next); // 検証つきクローン
+  } catch {
+    showRejectText("局面JSONが不正です");
     return;
   }
-  state = applyState(next); // 検証つきクローン（不正 cells は throw で弾く）
+  state = applied;
   // ラウンド機械リセット（resolveRound と同手順）。
   blackPlot = null;
   whitePlot = null;
